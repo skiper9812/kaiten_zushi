@@ -17,7 +17,7 @@ typedef enum {
 
 // Funkcja obs³ugi b³êdów
 // Wyœwietla komunikat, opcjonalnie raportuje errno i decyduje o dalszym dzia³aniu programu
-void handle_error(ErrorCode code, const char* msg);
+void handle_error(ErrorCode code, const char* msg, int saved_errno);
 
 // Makro u³atwiaj¹ce sprawdzanie wyników funkcji systemowych
 #define CHECK_ERR(call, code, msg)         \
@@ -28,3 +28,5 @@ void handle_error(ErrorCode code, const char* msg);
         }                                  \
     } while (0)
 
+#define CHECK_NULL(ptr, code, msg) \
+    if ((ptr) == NULL) handle_error(code, msg, 0)
