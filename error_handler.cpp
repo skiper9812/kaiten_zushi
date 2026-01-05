@@ -13,6 +13,7 @@ void handle_error(ErrorCode code, const char* msg, int saved_errno) {
         case ERR_IPC_INIT:
         case ERR_SEM_OP:
         case ERR_MEM_ALLOC:
+        case ERR_IPC_MSG:
             exit(EXIT_FAILURE);
         case ERR_FILE_IO:
             break;

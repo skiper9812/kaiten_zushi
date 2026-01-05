@@ -7,6 +7,7 @@
 // Kody b³êdów specyficzne dla projektu
 typedef enum {
     ERR_IPC_INIT,       // b³¹d inicjalizacji IPC
+    ERR_IPC_MSG,        // b³¹d operacji na kolejce komunikatów
     ERR_SEM_OP,         // b³¹d operacji na semaforze
     ERR_MEM_ALLOC,      // b³¹d alokacji pamiêci
     ERR_FILE_IO,        // b³¹d operacji plikowej

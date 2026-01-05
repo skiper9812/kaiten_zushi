@@ -1,17 +1,27 @@
 #pragma once
-#include "error_handler.h"
 #include "common.h"
-RestaurantState* get_state();
+extern RestaurantState* get_state();
+void handle_manager_signal(int sig);
 
 int ipc_init();
 void ipc_cleanup();
 
-void sem_set();
-void sem_lock();
-void sem_unlock();
+static void sem_set(int semnum, int val);
+void P(int semnum);
+void V(int semnum);
+
+void send_premium_order(int table_id, int price);
+int recv_premium_order(struct PremiumMsg* msg);
 
 void sem_init_all();
 void sem_destroy_all();
 
 void shm_init();
 void shm_destroy();
+
+void fifo_init();
+int fifo_open_read();
+void fifo_close_read();
+void fifo_log(const char* msg);
+void logger_loop(const char* filename);
+void fifo_init_close_signal();

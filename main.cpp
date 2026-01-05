@@ -28,6 +28,8 @@ int main() {
             state->tables[i].groupSize);
     }
 
+    start_service();
+
     // 4. Sprz¹tanie IPC
     ipc_cleanup();
 
