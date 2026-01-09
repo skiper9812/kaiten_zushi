@@ -1,4 +1,5 @@
 #include "client.h"
+#include "ipc_manager.h"
 
 void client_process() {
     for (;;) {

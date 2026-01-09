@@ -5,6 +5,7 @@
 #include <sys/sem.h>
 #include <sys/shm.h>
 #include <sys/msg.h>
+#include <sys/wait.h>
 #include <signal.h>
 #include <unistd.h>
 #include <fcntl.h>

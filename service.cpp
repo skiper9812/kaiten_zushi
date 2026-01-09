@@ -12,13 +12,14 @@ static int check_close_signal() {
 }
 
 void start_service() {
+    /* REGISTER SIGNALS */
     signal(SIGUSR1, handle_manager_signal);
     signal(SIGUSR2, handle_manager_signal);
     signal(SIGTERM, handle_manager_signal);
 
     RestaurantState* state = get_state();
 
-    for (;;) {
+    for (int i = 0; i < 10; ++i) {
         int do_accel = 0;
         int do_slow = 0;
         int do_evacuate = 0;
@@ -43,6 +44,7 @@ void start_service() {
         V(SEM_MUTEX_STATE);
 
         if (do_accel) {
+            /* przyspieszenie */
             write(STDOUT_FILENO, "Ale jazda\n", 10);
         }
 
@@ -52,8 +54,9 @@ void start_service() {
 
         if (do_evacuate) {
             /* natychmiastowe wyjœcie */
-            break;
         }
+
+        sleep(1);
     }
 }
 

@@ -9,7 +9,67 @@ static int sem_id = -1;
 static int msg_id = -1;
 static RestaurantState* state = NULL;
 
+static int fifo_fd_write = -1;
 static int fifo_fd_read = -1;
+
+/* ---------- INIT FIFO ---------- */
+void fifo_init() {
+    if (access(FIFO_PATH, F_OK) == -1) {
+        if (mkfifo(FIFO_PATH, 0666) == -1) {
+            CHECK_ERR(-1, ERR_IPC_INIT, "mkfifo");
+        }
+    }
+}
+
+/* ---------- LOGGER LOOP ---------- */
+void logger_loop(const char* filename) {
+    fifo_fd_read = open(FIFO_PATH, O_RDONLY);
+    CHECK_ERR(fifo_fd_read, ERR_IPC_INIT, "fifo open read");
+
+    FILE* file = fopen(filename, "w");
+    CHECK_NULL(file, ERR_FILE_IO, "fopen log file");
+
+    char buffer[512];
+    ssize_t n;
+
+    while ((n = read(fifo_fd_read, buffer, sizeof(buffer) - 1)) > 0) {
+        buffer[n] = '\0';
+        fprintf(file, "%s", buffer);
+        fflush(file);
+    }
+
+    fclose(file);
+    close(fifo_fd_read);
+    fifo_fd_read = -1;
+}
+
+/* ---------- OPEN FIFO WRITE ---------- */
+void fifo_open_write() {
+    if (fifo_fd_write == -1) {
+        fifo_fd_write = open(FIFO_PATH, O_WRONLY);
+        CHECK_ERR(fifo_fd_write, ERR_IPC_INIT, "fifo open write");
+    }
+}
+
+/* ---------- CLOSE FIFO WRITE ---------- */
+void fifo_close_write() {
+    if (fifo_fd_write != -1) {
+        close(fifo_fd_write);
+        fifo_fd_write = -1;
+    }
+}
+
+/* ---------- LOG FUNCTION ---------- */
+void fifo_log(const char* msg) {
+    //if (fifo_fd_write == -1) return;
+    CHECK_ERR(fifo_fd_write, ERR_IPC_INIT, "fifo open write");
+
+    char buffer[512];
+    int len = snprintf(buffer, sizeof(buffer), "%s\n", msg);
+    if (write(fifo_fd_write, buffer, len) == -1) {
+        fprintf(stderr, "FIFO write error: %s\n", strerror(errno));
+    }
+}
 
 /* ---------- SIGNAL ---------- */
 
@@ -32,74 +92,9 @@ void handle_manager_signal(int sig) {
     }
 }
 
-/* ---------- INIT FIFO ---------- */
-
-void fifo_init() {
-    // jeœli nie istnieje, utwórz FIFO
-    if (access(FIFO_PATH, F_OK) == -1) {
-        if (mkfifo(FIFO_PATH, 0666) == -1) {
-            CHECK_ERR(-1, ERR_IPC_INIT, "mkfifo");
-        }
-    }
-}
-
 void fifo_init_close_signal() {
     // ignoruj b³¹d, jeœli FIFO ju¿ istnieje
     mkfifo(CLOSE_FIFO, 0666);
-}
-
-/* ---------- READ ---------- */
-
-int fifo_open_read() {
-    fifo_fd_read = open(FIFO_PATH, O_RDONLY);
-    CHECK_ERR(fifo_fd_read, ERR_IPC_INIT, "fifo open read");
-    return fifo_fd_read;
-}
-
-void fifo_close_read() {
-    if (fifo_fd_read != -1) {
-        close(fifo_fd_read);
-        fifo_fd_read = -1;
-    }
-}
-
-/* ---------- SEND LOG ---------- */
-
-void fifo_log(const char* msg) {
-    int fd = open(FIFO_PATH, O_WRONLY);
-    if (fd == -1) {
-        // jeœli nie da siê otworzyæ FIFO, logujemy do stderr, ale nie zabijamy procesu
-        fprintf(stderr, "FIFO log error: %s\n", strerror(errno));
-        return;
-    }
-
-    size_t len = strlen(msg);
-    if (write(fd, msg, len) == -1) {
-        fprintf(stderr, "FIFO write error: %s\n", strerror(errno));
-    }
-
-    close(fd);
-}
-
-/* ---------- LOGGER LOOP ---------- */
-
-void logger_loop(const char* filename) {
-    fifo_open_read();
-
-    FILE* file = fopen(filename, "w");
-    CHECK_NULL(file, ERR_FILE_IO, "fopen log file");
-
-    char buffer[256];
-    ssize_t n;
-
-    while ((n = read(fifo_fd_read, buffer, sizeof(buffer) - 1)) > 0) {
-        buffer[n] = '\0'; // null-terminate
-        fprintf(file, "%s\n", buffer);
-        fflush(file);
-    }
-
-    fclose(file);
-    fifo_close_read();
 }
 
 /* ---------- SEMAFORY ---------- */
@@ -238,4 +233,11 @@ void ipc_cleanup() {
         semctl(sem_id, 0, IPC_RMID);
         sem_id = -1;
     }
+
+    if (msg_id != -1) {
+        msgctl(msg_id, IPC_RMID, NULL);
+        msg_id = -1;
+    }
+    unlink(FIFO_PATH);
+    unlink(CLOSE_FIFO);
 }

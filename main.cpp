@@ -1,6 +1,5 @@
 #include "ipc_manager.h"
 #include "manager.h"
-#include "service.h"
 #include "chef.h"
 #include "client.h"
 
@@ -12,23 +11,44 @@ int main() {
     RestaurantState* state = get_state();
     CHECK_NULL(state, ERR_IPC_INIT, "Failed to get RestaurantState pointer");
 
-    // 3. Weryfikacja pól struktury
-    printf("Restaurant mode: %d\n", state->restaurantMode);
-    printf("Current guest count: %d\n", state->currentGuestCount);
-    printf("Next guest ID: %d\n", state->nextGuestID);
-    printf("Belt head: %d, Belt tail: %d\n", state->beltHead, state->beltTail);
 
-    printf("\nTables:\n");
-    for (int i = 0; i < TABLE_COUNT; ++i) {
-        printf("Table %d: capacity=%d, isOccupied=%d, groupID=%d, groupSize=%d\n",
-            state->tables[i].tableID,
-            state->tables[i].capacity,
-            state->tables[i].isOccupied,
-            state->tables[i].groupID,
-            state->tables[i].groupSize);
+    // 2. Utworzenie procesu loggera
+    pid_t logger_pid = fork();
+    if (logger_pid == 0) {
+        // w procesie potomnym uruchom logger
+        logger_loop("logs/simulation.log");  // blokuje do zamkniêcia FIFO
+        _exit(0);
     }
 
-    start_service();
+    // 3. Utworzenie procesu managera
+    pid_t manager_pid = fork();
+    if (manager_pid == 0) {
+        start_manager();  // pêtla testowa / minimalna
+        _exit(0);
+    }
+
+    // 4. Utworzenie procesu szefa kuchni
+    pid_t chef_pid = fork();
+    if (chef_pid == 0) {
+        start_chef();  // pêtla testowa
+        _exit(0);
+    }
+
+    // 5. Utworzenie generatora klientów
+    pid_t client_pid = fork();
+    if (client_pid == 0) {
+        start_clients();  // pêtla testowa
+        _exit(0);
+    }
+
+    // 6. Opcjonalnie: ograniczenie pêtli do X iteracji w start_*
+    // lub sleep() w main() ¿eby procesy mog³y dzia³aæ
+
+    // 7. Czekanie na zakoñczenie procesów
+    waitpid(logger_pid, NULL, 0);
+    waitpid(manager_pid, NULL, 0);
+    waitpid(chef_pid, NULL, 0);
+    waitpid(client_pid, NULL, 0);
 
     // 4. Sprz¹tanie IPC
     ipc_cleanup();

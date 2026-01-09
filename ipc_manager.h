@@ -20,8 +20,8 @@ void shm_init();
 void shm_destroy();
 
 void fifo_init();
-int fifo_open_read();
-void fifo_close_read();
+void fifo_open_write();
+void fifo_close_write();
 void fifo_log(const char* msg);
 void logger_loop(const char* filename);
 void fifo_init_close_signal();
