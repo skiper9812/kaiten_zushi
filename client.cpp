@@ -1,11 +1,59 @@
 #include "client.h"
 
+Group* generate_group(RestaurantState* state) {
+    Group* grp = new Group();
+
+    // unikalny ID w sekcji krytycznej
+    P(SEM_MUTEX_STATE);
+    grp->groupID = state->nextGroupID++;
+    V(SEM_MUTEX_STATE);
+
+    grp->groupSize = rand() % 4 + 1;
+    grp->isVip = (rand() % 100) < 2;
+    grp->childCount = grp->isVip ? 0 : rand() % grp->groupSize;
+    grp->adultCount = grp->isVip ? grp->groupSize : grp->groupSize - grp->childCount;
+    grp->dishesToEat = rand() % 8 + 3;
+
+    char buffer[128];
+    snprintf(buffer, sizeof(buffer),
+        "CLIENTS: GROUP %d arrived | size=%d adults=%d children=%d VIP=%d dishes=%d",
+        grp->groupID, grp->groupSize, grp->adultCount, grp->childCount, grp->isVip, grp->dishesToEat);
+    fifo_log(buffer);
+
+    return grp;
+}
+
+void consume_dish(RestaurantState* state, Group* grp, int* running_bill) {
+    Dish plate;
+
+    P(SEM_BELT_ITEMS);
+
+    P(SEM_MUTEX_STATE);
+    plate = state->belt[state->beltHead];
+    state->beltHead = (state->beltHead + 1) % BELT_SIZE;
+    V(SEM_MUTEX_STATE);
+
+    V(SEM_BELT_SLOTS);
+
+    if (grp->dishesToEat > 0) {
+        grp->dishesToEat--;
+        grp->eatenCount[plate.color]++;
+    }
+
+    char buffer[128];
+    snprintf(buffer, sizeof(buffer),
+        "CLIENT: Group %d consumed dish %d | price=%d remaining dishes=%d",
+        grp->groupID, plate.dishID, plate.price, grp->dishesToEat);
+    fifo_log(buffer);
+}
+
 void start_clients() {
     signal(SIGUSR1, handle_manager_signal);
     signal(SIGUSR2, handle_manager_signal);
     signal(SIGTERM, handle_manager_signal);
 
     RestaurantState* state = get_state();
+    Group* grp;
     fifo_open_write();
 
     for (int i = 0; i < 10; i++) {
@@ -13,14 +61,8 @@ void start_clients() {
         int do_slow = 0;
         int do_evacuate = 0;
 
-        P(SEM_MUTEX_STATE);
-        int g_id = state->nextGroupID++;
-        V(SEM_MUTEX_STATE);
-
-        char buffer[64];
-        snprintf(buffer, sizeof(buffer), "CLIENTS: the %d group arrived", g_id);
-
-        fifo_log(buffer);
+        grp = generate_group(state);
+        queue_push(grp);
 
         P(SEM_MUTEX_STATE);
 
@@ -43,7 +85,6 @@ void start_clients() {
 
         if (do_accel) {
             /* przyspieszenie */
-            write(STDOUT_FILENO, "Ale jazda\n", 10);
         }
 
         if (do_slow) {

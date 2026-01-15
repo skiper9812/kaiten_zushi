@@ -15,7 +15,7 @@ static int fifo_fd_read = -1;
 /* ---------- INIT FIFO ---------- */
 void fifo_init() {
     if (access(FIFO_PATH, F_OK) == -1) {
-        if (mkfifo(FIFO_PATH, 0666) == -1) {
+        if (mkfifo(FIFO_PATH, 0600) == -1) {
             CHECK_ERR(-1, ERR_IPC_INIT, "mkfifo");
         }
     }
@@ -94,7 +94,7 @@ void handle_manager_signal(int sig) {
 
 void fifo_init_close_signal() {
     // ignoruj b³¹d, jeœli FIFO ju¿ istnieje
-    mkfifo(CLOSE_FIFO, 0666);
+    mkfifo(CLOSE_FIFO, 0600);
 }
 
 /* ---------- SEMAFORY ---------- */
@@ -151,61 +151,36 @@ int ipc_init() {
     CHECK_ERR(MSG_KEY, ERR_IPC_INIT, "ftok MSG");
 
     /* SHM */
-    shm_id = shmget(SHM_KEY, sizeof(RestaurantState), IPC_CREAT | 0666);
+    shm_id = shmget(SHM_KEY, sizeof(RestaurantState), IPC_CREAT | 0600);
     CHECK_ERR(shm_id, ERR_IPC_INIT, "shmget");
 
     state = (RestaurantState*)shmat(shm_id, NULL, 0);
     CHECK_NULL(state, ERR_IPC_INIT, "shmat");
 
     /* MSG */
-    msg_id = msgget(MSG_KEY, IPC_CREAT | 0666);
+    msg_id = msgget(MSG_KEY, IPC_CREAT | 0600);
     CHECK_ERR(msg_id, ERR_IPC_INIT, "msgget premium");
 
     /* SEM */
-    sem_id = semget(SEM_KEY, SEM_COUNT, IPC_CREAT | 0666);
+    sem_id = semget(SEM_KEY, SEM_COUNT, IPC_CREAT | 0600);
     CHECK_ERR(sem_id, ERR_IPC_INIT, "semget");
 
     sem_set(SEM_MUTEX_STATE, 1);      // mutex binarny
+    sem_set(SEM_MUTEX_QUEUE, 1);      // mutex binarny
     sem_set(SEM_BELT_SLOTS, BELT_SIZE);
     sem_set(SEM_BELT_ITEMS, 0);
-    sem_set(SEM_TABLES, TOTAL_SEATS);
+    sem_set(SEM_TABLES, TABLE_COUNT);
+    sem_set(SEM_QUEUE_FREE_VIP, MAX_QUEUE / 2);
+    sem_set(SEM_QUEUE_FREE_NORMAL, MAX_QUEUE / 2);
+    sem_set(SEM_QUEUE_USED_NORMAL, 0);
+    sem_set(SEM_QUEUE_USED_VIP, 0);
 
     /* FIFO */
     fifo_init();
     fifo_init_close_signal();
 
     /* INIT STATE */
-    P(SEM_MUTEX_STATE);
-
     memset(state, 0, sizeof(RestaurantState));
-
-    state->restaurantMode = OPEN;
-    state->beltHead = 0;
-    state->beltTail = 0;
-    state->currentDishCount = 0;
-
-    state->nextGuestID = 1;
-    state->nextGroupID = 1;
-    state->nextDishID = 1;
-
-    for (int i = 0; i < TABLE_COUNT; ++i) {
-        state->tables[i].tableID = i;
-
-        if (i < X1)
-            state->tables[i].capacity = 1;
-        else if (i < X1 + X2)
-            state->tables[i].capacity = 2;
-        else if (i < X1 + X2 + X3)
-            state->tables[i].capacity = 3;
-        else
-            state->tables[i].capacity = 4;
-
-        state->tables[i].isOccupied = 0;
-        state->tables[i].groupID = -1;
-        state->tables[i].groupSize = 0;
-    }
-
-    V(SEM_MUTEX_STATE);
 
     return 0;
 }
@@ -214,6 +189,70 @@ int ipc_init() {
 
 RestaurantState* get_state() {
     return state;
+}
+
+void queue_push(Group* grp) {
+    if (grp->isVip) {
+        P(SEM_QUEUE_FREE_VIP);
+
+        P(SEM_MUTEX_QUEUE);
+        for (int i = state->vip_queue.count; i > 0; --i) {
+            state->vip_queue.queue[i] = state->vip_queue.queue[i - 1];
+        }
+        state->vip_queue.queue[0] = grp;
+        state->vip_queue.count++;
+        V(SEM_MUTEX_QUEUE);
+
+        V(SEM_QUEUE_USED_VIP);
+    }
+    else {
+        P(SEM_QUEUE_FREE_NORMAL);
+
+        P(SEM_MUTEX_QUEUE);
+        for (int i = state->normal_queue.count; i > 0; --i) {
+            state->normal_queue.queue[i] = state->normal_queue.queue[i - 1];
+        }
+        state->normal_queue.queue[0] = grp;
+        state->normal_queue.count++;
+        V(SEM_MUTEX_QUEUE);
+
+        V(SEM_QUEUE_USED_NORMAL);
+    }
+}
+
+static Group* pop_from_queue(GroupQueue* q, int required_size) {
+    for (int i = 0; i < q->count; ++i) {
+        if (q->queue[i]->groupSize <= required_size) {
+            Group* grp = q->queue[i];
+
+            for (int j = i + 1; j < q->count; ++j)
+                q->queue[j - 1] = q->queue[j];
+
+            q->count--;
+            return grp;
+        }
+    }
+    return NULL;
+}
+
+Group* queue_pop(int required_size, bool vipSuitable) {
+    Group* grp = NULL;
+
+    P(SEM_MUTEX_QUEUE);
+    if (vipSuitable)
+        grp = pop_from_queue(&state->vip_queue, required_size);
+    else
+        grp = pop_from_queue(&state->normal_queue, required_size);
+
+    if (grp != NULL) {
+        if (vipSuitable)
+            V(SEM_QUEUE_FREE_VIP);
+        else
+            V(SEM_QUEUE_FREE_NORMAL);
+    }
+    V(SEM_MUTEX_QUEUE);
+
+    return grp;
 }
 
 /* ---------- CLEANUP ---------- */

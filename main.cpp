@@ -1,9 +1,12 @@
 #include "ipc_manager.h"
 #include "manager.h"
 #include "chef.h"
+#include "service.h"
 #include "client.h"
 
 int main() {
+    srand(time(0));
+
     // 1. Inicjalizacja IPC
     CHECK_ERR(ipc_init(), ERR_IPC_INIT, "IPC initialization");
 
@@ -27,10 +30,16 @@ int main() {
         _exit(0);
     }
 
-    // 4. Utworzenie procesu szefa kuchni
+    // 4.1 Utworzenie procesu szefa kuchni
     pid_t chef_pid = fork();
     if (chef_pid == 0) {
         start_chef();  // pêtla testowa
+        _exit(0);
+    }
+
+    pid_t service_pid = fork();
+    if (service_pid == 0) {
+        start_service();  // pêtla testowa
         _exit(0);
     }
 
@@ -41,6 +50,8 @@ int main() {
         _exit(0);
     }
 
+    
+
     // 6. Opcjonalnie: ograniczenie pêtli do X iteracji w start_*
     // lub sleep() w main() ¿eby procesy mog³y dzia³aæ
 
@@ -48,6 +59,7 @@ int main() {
     waitpid(logger_pid, NULL, 0);
     waitpid(manager_pid, NULL, 0);
     waitpid(chef_pid, NULL, 0);
+    waitpid(service_pid, NULL, 0);
     waitpid(client_pid, NULL, 0);
 
     // 4. Sprz¹tanie IPC

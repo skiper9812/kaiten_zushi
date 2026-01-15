@@ -11,6 +11,40 @@ static int check_close_signal() {
     return 0;
 }
 
+void chef_put_dish(RestaurantState* state, int target) {
+    Dish plate;
+
+    P(SEM_BELT_SLOTS);
+
+    int idx = rand() % 3 + (target == -1 ? 0 : 3);   // 1–3 basic, 4–6 premium
+
+    plate.color = colorFromIndex(idx);
+    plate.price = priceForColor(plate.color);
+    plate.targetTableID = target;
+
+
+    P(SEM_MUTEX_STATE);
+    plate.dishID = state->nextDishID++;
+    state->belt[state->beltTail] = plate;
+    state->beltTail = (state->beltTail + 1) % BELT_SIZE;
+    V(SEM_MUTEX_STATE);
+
+    V(SEM_BELT_ITEMS);
+
+    /*if (target != -1) {
+        send_premium_order(target, plate.price);
+    }*/
+
+    char buffer[128];
+    snprintf(buffer, sizeof(buffer),
+        "CHEF: DISH %d cooked | color=%s price=%d targetTableID=%d",
+        plate.dishID, colorToString(plate.color), plate.price, plate.targetTableID);
+    fifo_log(buffer);
+}
+
+
+
+
 void start_chef() {
     signal(SIGUSR1, handle_manager_signal);
     signal(SIGUSR2, handle_manager_signal);
@@ -25,15 +59,7 @@ void start_chef() {
         int do_slow = 0;
         int do_evacuate = 0;
 
-        P(SEM_MUTEX_STATE);
-        int dish_id = state->nextDishID++;
-        V(SEM_MUTEX_STATE);
-
-        char buffer[64];
-        snprintf(buffer, sizeof(buffer), "CHEF: produced dish %d", dish_id);
-
-        fifo_log(buffer);
-        //write(STDOUT_FILENO, buffer, strlen(buffer));
+        chef_put_dish(state, -1);
 
         P(SEM_MUTEX_STATE);
 

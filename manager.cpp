@@ -16,6 +16,32 @@ void start_manager() {
     RestaurantState* state = get_state();
     fifo_open_write();
 
+    /* INIT STATE */
+    P(SEM_MUTEX_STATE);
+
+    state->restaurantMode = OPEN;
+    state->beltHead = 0;
+    state->beltTail = 0;
+
+    state->nextGuestID = 1;
+    state->nextGroupID = 1;
+    state->nextDishID = 1;
+
+    for (int i = 0; i < TABLE_COUNT; ++i) {
+        state->tables[i].tableID = i;
+
+        if (i < X1)
+            state->tables[i].capacity = 1;
+        else if (i < X1 + X2)
+            state->tables[i].capacity = 2;
+        else if (i < X1 + X2 + X3)
+            state->tables[i].capacity = 3;
+        else
+            state->tables[i].capacity = 4;
+    }
+
+    V(SEM_MUTEX_STATE);
+
     for (int i = 0; i < 10; i++) {
         int do_accel = 0;
         int do_slow = 0;

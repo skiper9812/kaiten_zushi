@@ -25,3 +25,6 @@ void fifo_close_write();
 void fifo_log(const char* msg);
 void logger_loop(const char* filename);
 void fifo_init_close_signal();
+
+Group* queue_pop(int required_size, bool vipSuitable);
+void queue_push(Group* grp);
