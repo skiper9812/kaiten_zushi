@@ -51,10 +51,12 @@ void start_chef() {
     signal(SIGTERM, handle_manager_signal);
 
     RestaurantState* state = get_state();
+    req_qid = connect_queue(REQ_QUEUE_PROJ);
+    resp_qid = connect_queue(RESP_QUEUE_PROJ);
 
     fifo_open_write();
 
-    for (int i = 0; i < 10; i++) {
+    for (int i = 0; i < 100; i++) {
         int do_accel = 0;
         int do_slow = 0;
         int do_evacuate = 0;

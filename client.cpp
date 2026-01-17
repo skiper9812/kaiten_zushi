@@ -1,114 +1,162 @@
-#include "client.h"
+﻿#include "client.h"
+#include "ipc_manager.h"
 
-Group* generate_group(RestaurantState* state) {
-    Group* grp = new Group();
+#define ASSIGN 1
+#define CONSUME 2
+#define DONE 3
 
-    // unikalny ID w sekcji krytycznej
-    P(SEM_MUTEX_STATE);
-    grp->groupID = state->nextGroupID++;
-    V(SEM_MUTEX_STATE);
+// ===== Handlery =====
 
-    grp->groupSize = rand() % 4 + 1;
-    grp->isVip = (rand() % 100) < 2;
-    grp->childCount = grp->isVip ? 0 : rand() % grp->groupSize;
-    grp->adultCount = grp->isVip ? grp->groupSize : grp->groupSize - grp->childCount;
-    grp->dishesToEat = rand() % 8 + 3;
+static void handle_create_group() {
+    char logBuffer[256];
+    time_t timestamp = time(NULL);
 
-    char buffer[128];
-    snprintf(buffer, sizeof(buffer),
-        "CLIENTS: GROUP %d arrived | size=%d adults=%d children=%d VIP=%d dishes=%d",
-        grp->groupID, grp->groupSize, grp->adultCount, grp->childCount, grp->isVip, grp->dishesToEat);
-    fifo_log(buffer);
+    // Tworzenie nowego procesu grupy i inicjalizacja przez konstruktor
+    Group g;  // konstruktor ustawia wszystkie pola
+    int groupID = g.getGroupID();
 
-    return grp;
-}
-
-void consume_dish(RestaurantState* state, Group* grp, int* running_bill) {
-    Dish plate;
-
-    P(SEM_BELT_ITEMS);
-
-    P(SEM_MUTEX_STATE);
-    plate = state->belt[state->beltHead];
-    state->beltHead = (state->beltHead + 1) % BELT_SIZE;
-    V(SEM_MUTEX_STATE);
-
-    V(SEM_BELT_SLOTS);
-
-    if (grp->dishesToEat > 0) {
-        grp->dishesToEat--;
-        grp->eatenCount[plate.color]++;
+    pid_t pid = fork();
+    if (pid == 0) {
+        // Proces potomny grupy
+        group_loop(g); // lokalna pętla symulacji grupy
+        _exit(0);
     }
-
-    char buffer[128];
-    snprintf(buffer, sizeof(buffer),
-        "CLIENT: Group %d consumed dish %d | price=%d remaining dishes=%d",
-        grp->groupID, plate.dishID, plate.price, grp->dishesToEat);
-    fifo_log(buffer);
 }
+
+void handle_consume_dish(Group& g, int dishCount) {
+    char logBuffer[256];
+    time_t timestamp = time(NULL);
+
+    // Tworzymy komunikat do service
+    ClientRequest req{};
+    req.mtype = CONSUME;                  // typ wiadomości w kolejce
+    req.type = REQ_CONSUME_DISH;    // żądanie konsumpcji
+    req.groupID = g.getGroupID();
+    req.extraData = dishCount;      // liczba dań do zjedzenia w tym kroku
+
+    queue_send_request(req);         // wysyłamy do service
+
+    // Logujemy chęć konsumpcji
+    snprintf(logBuffer, sizeof(logBuffer),
+        "[%ld] [REQUEST CONSUME] groupID=%d, pid=%d, dishesRequested=%d",
+        timestamp, g.getGroupID(), getpid(), dishCount);
+    fifo_log(logBuffer);
+}
+
+
+void handle_group_done(const Group& g) {
+    char logBuffer[256];
+    time_t timestamp = time(NULL);
+
+    // Tworzymy komunikat do service
+    ClientRequest req{};
+    req.mtype = DONE;                  // typ wiadomości w kolejce
+    req.type = REQ_GROUP_DONE;      // żądanie zakończenia
+    req.groupID = g.getGroupID();
+    req.extraData = 0;              // dodatkowo można przesłać PID lub inne info
+
+    queue_send_request(req);         // wysyłamy do service
+
+    // Logujemy intencję zakończenia
+    snprintf(logBuffer, sizeof(logBuffer),
+        "[%ld] [REQUEST DONE] groupID=%d, pid=%d",
+        timestamp, g.getGroupID(), getpid());
+    fifo_log(logBuffer);
+}
+
+static void handle_get_group(const Group& g) {
+    ClientResponse resp{};
+    time_t timestamp = time(NULL);
+
+    resp.mtype = 1;
+    resp.pid = getpid();
+    resp.groupID = g.getGroupID();
+    resp.groupSize = g.getGroupSize();
+    resp.adultCount = g.getAdultCount();
+    resp.childCount = g.getChildCount();
+    resp.vipStatus = g.getVipStatus();
+    resp.dishesToEat = g.getDishesToEat();
+
+    queue_send_response(resp);
+}
+
+static void handle_reject_group(const Group& g) {
+    char logBuffer[256];
+    time_t timestamp = time(NULL);
+
+    snprintf(logBuffer, sizeof(logBuffer),
+        "[%ld] [GROUP REJECTED] pid=%d groupID=%d size=%d vip=%d dishes=%d",
+        timestamp, getpid(), g.getGroupID(), g.getGroupSize(), g.getVipStatus(), g.getDishesToEat()
+    );
+
+    fifo_log(logBuffer);
+
+    _exit(0);
+}
+
+// ===== statyczne pola Group =====
+int Group::nextGroupID = 0;
+
+void group_loop(Group& g) {
+    req_qid = connect_queue(REQ_QUEUE_PROJ);
+    resp_qid = connect_queue(RESP_QUEUE_PROJ);
+
+    char logBuffer[256];
+    time_t timestamp = time(NULL);
+
+    // ===== Powiadomienie service.cpp, że nowa grupa przyszła =====
+    ClientRequest request{};
+    request.mtype = ASSIGN;          // typ wiadomości w kolejce (dowolnie ustalony)
+    request.type = REQ_ASSIGN_GROUP;         // typ żądania CREATE_GROUP
+    request.groupID = g.getGroupID();
+    request.extraData = getpid();            // PID procesu grupy
+
+    queue_send_request(request);             // wysyłamy do service
+
+    // Logowanie powstania grupy
+    snprintf(logBuffer, sizeof(logBuffer),
+        "[%ld] [GROUP CREATED] groupID=%d, pid=%d, groupSize=%d, dishesLeft=%d, vipStatus=%d",
+        timestamp, g.getGroupID(), getpid(), g.getGroupSize(), g.getDishesToEat(), g.getVipStatus());
+    fifo_log(logBuffer);
+    // =================================================================
+
+    // ===== Główna pętla symulacji grupy =====
+    while (!g.isFinished()) {
+        // tutaj decyzje grupy: consumeDish(), groupDone(), etc.
+        ServiceRequest req{};
+        queue_recv_request(req);   // odbiera request od service
+
+        switch (req.type) {
+        case REQ_GET_GROUP:
+            handle_get_group(g);
+            break;
+        case REQ_GROUP_REJECT:
+            handle_reject_group(g);
+            break;
+        default:
+            break;
+        }
+
+        sleep(1);  // symulacja czasu między decyzjami
+    }
+}
+
+// =====================================================
+// GŁÓWNA PĘTLA CLIENT
+// =====================================================
 
 void start_clients() {
-    signal(SIGUSR1, handle_manager_signal);
-    signal(SIGUSR2, handle_manager_signal);
-    signal(SIGTERM, handle_manager_signal);
-
-    RestaurantState* state = get_state();
-    Group* grp;
     fifo_open_write();
+    RestaurantState* state = get_state();
 
-    for (int i = 0; i < 10; i++) {
-        int do_accel = 0;
-        int do_slow = 0;
-        int do_evacuate = 0;
+    while (true) {
+        // losowy odstęp czasowy między przyjściem grup
+        sleep(rand() % 3 + 1);  // np. 1-3 sekundy
 
-        grp = generate_group(state);
-        queue_push(grp);
+        handle_create_group();
 
-        P(SEM_MUTEX_STATE);
-
-        if (state->sig_accelerate) {
-            do_accel = 1;
-            state->sig_accelerate = 0;
-        }
-
-        if (state->sig_slowdown) {
-            do_slow = 1;
-            state->sig_slowdown = 0;
-        }
-
-        if (state->sig_evacuate) {
-            do_evacuate = 1;
-            state->sig_evacuate = 0;
-        }
-
-        V(SEM_MUTEX_STATE);
-
-        if (do_accel) {
-            /* przyspieszenie */
-        }
-
-        if (do_slow) {
-            /* spowolnienie */
-        }
-
-        if (do_evacuate) {
-            /* natychmiastowe wyj�cie */
-        }
-
-        sleep(1);
+        // Opcjonalnie log lub inne czynności w przerwie między generowaniem
     }
 
     fifo_close_write();
 }
-
-static int check_close_signal() {
-    char buf[32];
-    int fd = open(CLOSE_FIFO, O_RDONLY | O_NONBLOCK);
-    if (fd == -1) return 0; // FIFO nie istnieje
-    int ret = read(fd, buf, sizeof(buf));
-    close(fd);
-    if (ret > 0 && strcmp(buf, "CLOSE_RESTAURANT") == 0)
-        return 1; // sygna� zamkni�cia
-    return 0;
-}
-

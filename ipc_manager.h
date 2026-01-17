@@ -1,23 +1,139 @@
 #pragma once
 #include "common.h"
-extern RestaurantState* get_state();
+
+#define REQ_QUEUE_PROJ 'Q'
+#define RESP_QUEUE_PROJ 'R'
+#define MAX_MSG_TEXT 128
+
+extern int req_qid;
+extern int resp_qid;
+
+
+
+// =====================================================
+// IPC – protokó³ clients <-> reszta systemu
+// =====================================================
+
+enum ClientRequestType {
+    REQ_ASSIGN_GROUP,
+    REQ_CONSUME_DISH,
+    REQ_GROUP_DONE
+};
+
+enum ServiceRequestType {
+    REQ_GET_GROUP,
+    REQ_GROUP_REJECT
+};
+
+typedef struct {
+    long mtype;
+    ServiceRequestType type;
+    int extraData;
+} ServiceRequest;
+
+typedef struct {
+    long mtype;
+    ClientRequestType type;
+    int groupID;
+    int extraData;     // np. colorIndex lub dodatkowa informacja
+} ClientRequest;
+
+typedef struct {
+    long mtype;
+    int pid;
+    int groupID;
+    int groupSize;
+    int adultCount;
+    int childCount;
+    bool vipStatus;
+    int dishesToEat;
+} ClientResponse;
+
+struct IPCRequestMessage {
+    long mtype;
+    ClientRequest req;
+};
+
+struct IPCResponseMessage {
+    long mtype;
+    ClientResponse resp;
+};
+
+
+struct PremiumMsg {
+    long mtype;
+    int table_id;
+    int dish_price;
+};
+
+// -----------------------------------------------------
+// Globalne klucze i identyfikatory IPC
+// -----------------------------------------------------
+
+extern key_t SHM_KEY;
+extern key_t SEM_KEY;
+extern key_t MSG_KEY;
+
+extern int shm_id;
+extern int sem_id;
+extern int msg_id;
+extern RestaurantState* state;
+
+extern int fifo_fd_write;
+extern int fifo_fd_read;
+
+// -----------------------------------------------------
+// Funkcje dostêpu do stanu
+// -----------------------------------------------------
+
+RestaurantState* get_state();
 void handle_manager_signal(int sig);
+
+// -----------------------------------------------------
+// Inicjalizacja / czyszczenie IPC
+// -----------------------------------------------------
 
 int ipc_init();
 void ipc_cleanup();
 
-static void sem_set(int semnum, int val);
+// -----------------------------------------------------
+// Semafory
+// -----------------------------------------------------
+
+ static void sem_set(int semnum, int val);
 void P(int semnum);
 void V(int semnum);
 
+// -----------------------------------------------------
+// Kolejki komunikatów (System V)
+// -----------------------------------------------------
+
+int queue_pop(int requiredSize, bool vipSuitable);
+bool queue_push(int groupID, bool vipStatus);
+
+int create_queue(char proj_id);
+int connect_queue(char proj_id);
+void remove_queue(char proj_id);
+
+void queue_send_request(const ClientRequest& msg);
+void queue_recv_request(ClientRequest& msg);
+
+void queue_send_response(const ClientResponse& msg);
+void queue_recv_response(ClientResponse& msg);
+
+void queue_send_request(const ServiceRequest& msg);
+void queue_recv_request(ServiceRequest& msg);
+
+// -----------------------------------------------------
+// Premium orders
+// -----------------------------------------------------
+
 void send_premium_order(int table_id, int price);
-int recv_premium_order(struct PremiumMsg* msg);
+int recv_premium_order(PremiumMsg* msg);
 
-void sem_init_all();
-void sem_destroy_all();
-
-void shm_init();
-void shm_destroy();
+// -----------------------------------------------------
+// FIFO logger
+// -----------------------------------------------------
 
 void fifo_init();
 void fifo_open_write();
@@ -25,6 +141,3 @@ void fifo_close_write();
 void fifo_log(const char* msg);
 void logger_loop(const char* filename);
 void fifo_init_close_signal();
-
-Group* queue_pop(int required_size, bool vipSuitable);
-void queue_push(Group* grp);

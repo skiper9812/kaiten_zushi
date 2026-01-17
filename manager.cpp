@@ -15,6 +15,8 @@ void start_manager() {
 
     RestaurantState* state = get_state();
     fifo_open_write();
+    req_qid = connect_queue(REQ_QUEUE_PROJ);
+    resp_qid = connect_queue(RESP_QUEUE_PROJ);
 
     /* INIT STATE */
     P(SEM_MUTEX_STATE);
@@ -22,9 +24,6 @@ void start_manager() {
     state->restaurantMode = OPEN;
     state->beltHead = 0;
     state->beltTail = 0;
-
-    state->nextGuestID = 1;
-    state->nextGroupID = 1;
     state->nextDishID = 1;
 
     for (int i = 0; i < TABLE_COUNT; ++i) {

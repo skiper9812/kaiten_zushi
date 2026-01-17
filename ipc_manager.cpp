@@ -1,18 +1,111 @@
-#include "ipc_manager.h"
+ï»¿#include "ipc_manager.h"
+#include "client.h"
+#include <fcntl.h>
+#include <unistd.h>
+#include <string.h>
+#include <errno.h>
+#include <sys/msg.h>
+#include <sys/shm.h>
+#include <sys/sem.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <stddef.h>
+
+/* ---------- DEFINICJE GLOBALI ---------- */
 
 key_t SHM_KEY = -1;
 key_t SEM_KEY = -1;
 key_t MSG_KEY = -1;
 
-static int shm_id = -1;
-static int sem_id = -1;
-static int msg_id = -1;
-static RestaurantState* state = NULL;
+int shm_id = -1;
+int sem_id = -1;
+int msg_id = -1;
 
-static int fifo_fd_write = -1;
-static int fifo_fd_read = -1;
+int req_qid = -1;
+int resp_qid = -1;
 
-/* ---------- INIT FIFO ---------- */
+RestaurantState* state = nullptr;
+
+int fifo_fd_write = -1;
+int fifo_fd_read = -1;
+
+/* ---------- MESSAGE QUEUES ---------- */
+
+int create_queue(char proj_id) {
+    key_t key = ftok(".", proj_id);
+    CHECK_ERR(key, ERR_IPC_INIT, "ftok failed");
+
+    int qid = msgget(key, IPC_CREAT | 0600);
+    CHECK_ERR(qid, ERR_IPC_INIT, "msgget failed");
+
+    return qid;
+}
+
+int connect_queue(char proj_id) {
+    key_t key = ftok(".", proj_id);
+    CHECK_ERR(key, ERR_IPC_INIT, "ftok failed");
+
+    int qid = msgget(key, 0600);
+    CHECK_ERR(qid, ERR_IPC_INIT, "msgget connect failed");
+
+    return qid;
+}
+
+
+void remove_queue(char proj_id) {
+    CHECK_ERR(msgctl(proj_id, IPC_RMID, nullptr), ERR_IPC_MSG, "msgctl remove failed");
+}
+
+void queue_send_request(ServiceRequest& msg) {
+    CHECK_ERR(
+        msgrcv(req_qid, &msg, sizeof(ServiceRequest) - sizeof(long), 0, 0),
+        ERR_IPC_MSG,
+        "msgrcv request failed"
+    );
+}
+
+void queue_recv_request(ServiceRequest& msg) {
+    CHECK_ERR(
+        msgrcv(req_qid, &msg, sizeof(ServiceRequest) - sizeof(long), 0, 0),
+        ERR_IPC_MSG,
+        "msgrcv request failed"
+    );
+}
+
+void queue_send_request(const ClientRequest& msg) {
+    CHECK_ERR(
+        msgsnd(req_qid, &msg, sizeof(ClientRequest) - sizeof(long), 0),
+        ERR_IPC_MSG,
+        "msgsnd request failed"
+    );
+}
+
+void queue_recv_request(ClientRequest& msg) {
+    CHECK_ERR(
+        msgrcv(req_qid, &msg, sizeof(ClientRequest) - sizeof(long), 0, 0),
+        ERR_IPC_MSG,
+        "msgrcv request failed"
+    );
+}
+
+void queue_send_response(const ClientResponse& msg) {
+    CHECK_ERR(
+        msgsnd(resp_qid, &msg, sizeof(ClientResponse) - sizeof(long), 0),
+        ERR_IPC_MSG,
+        "msgsnd response failed"
+    );
+}
+
+void queue_recv_response(ClientResponse& msg) {
+    CHECK_ERR(
+        msgrcv(resp_qid, &msg, sizeof(IPCRequestMessage) - sizeof(long), 0, 0),
+        ERR_IPC_MSG,
+        "msgrcv response failed"
+    );
+}
+
+/* ---------- FIFO LOGGER ---------- */
+
 void fifo_init() {
     if (access(FIFO_PATH, F_OK) == -1) {
         if (mkfifo(FIFO_PATH, 0600) == -1) {
@@ -21,7 +114,33 @@ void fifo_init() {
     }
 }
 
-/* ---------- LOGGER LOOP ---------- */
+void fifo_init_close_signal() {
+    mkfifo(CLOSE_FIFO, 0600); // ignoruj bÅ‚Ä…d, jeÅ›li istnieje
+}
+
+void fifo_open_write() {
+    if (fifo_fd_write == -1) {
+        fifo_fd_write = open(FIFO_PATH, O_WRONLY);
+        CHECK_ERR(fifo_fd_write, ERR_IPC_INIT, "fifo open write");
+    }
+}
+
+void fifo_close_write() {
+    if (fifo_fd_write != -1) {
+        close(fifo_fd_write);
+        fifo_fd_write = -1;
+    }
+}
+
+void fifo_log(const char* msg) {
+    CHECK_ERR(fifo_fd_write, ERR_IPC_INIT, "fifo open write");
+    char buffer[512];
+    int len = snprintf(buffer, sizeof(buffer), "%s\n", msg);
+    if (write(fifo_fd_write, buffer, len) == -1) {
+        fprintf(stderr, "FIFO write error: %s\n", strerror(errno));
+    }
+}
+
 void logger_loop(const char* filename) {
     fifo_fd_read = open(FIFO_PATH, O_RDONLY);
     CHECK_ERR(fifo_fd_read, ERR_IPC_INIT, "fifo open read");
@@ -43,61 +162,21 @@ void logger_loop(const char* filename) {
     fifo_fd_read = -1;
 }
 
-/* ---------- OPEN FIFO WRITE ---------- */
-void fifo_open_write() {
-    if (fifo_fd_write == -1) {
-        fifo_fd_write = open(FIFO_PATH, O_WRONLY);
-        CHECK_ERR(fifo_fd_write, ERR_IPC_INIT, "fifo open write");
-    }
-}
-
-/* ---------- CLOSE FIFO WRITE ---------- */
-void fifo_close_write() {
-    if (fifo_fd_write != -1) {
-        close(fifo_fd_write);
-        fifo_fd_write = -1;
-    }
-}
-
-/* ---------- LOG FUNCTION ---------- */
-void fifo_log(const char* msg) {
-    //if (fifo_fd_write == -1) return;
-    CHECK_ERR(fifo_fd_write, ERR_IPC_INIT, "fifo open write");
-
-    char buffer[512];
-    int len = snprintf(buffer, sizeof(buffer), "%s\n", msg);
-    if (write(fifo_fd_write, buffer, len) == -1) {
-        fprintf(stderr, "FIFO write error: %s\n", strerror(errno));
-    }
-}
-
-/* ---------- SIGNAL ---------- */
+/* ---------- SIGNAL HANDLER ---------- */
 
 void handle_manager_signal(int sig) {
-    RestaurantState* s = get_state();  // lokalny wskaŸnik
+    RestaurantState* s = get_state();
     if (!s) return;
 
     switch (sig) {
-    case SIGUSR1:
-        s->sig_accelerate = 1;
-        break;
-    case SIGUSR2:
-        s->sig_slowdown = 1;
-        break;
-    case SIGTERM:
-        s->sig_evacuate = 1;
-        break;
-    default:
-        break;
+    case SIGUSR1: s->sig_accelerate = 1; break;
+    case SIGUSR2: s->sig_slowdown = 1; break;
+    case SIGTERM: s->sig_evacuate = 1; break;
+    default: break;
     }
 }
 
-void fifo_init_close_signal() {
-    // ignoruj b³¹d, jeœli FIFO ju¿ istnieje
-    mkfifo(CLOSE_FIFO, 0600);
-}
-
-/* ---------- SEMAFORY ---------- */
+/* ---------- SEMAPHORES ---------- */
 
 static void sem_set(int semnum, int val) {
     union semun {
@@ -105,7 +184,6 @@ static void sem_set(int semnum, int val) {
         struct semid_ds* buf;
         unsigned short* array;
     } arg;
-
     arg.val = val;
     CHECK_ERR(semctl(sem_id, semnum, SETVAL, arg), ERR_SEM_OP, "semctl SETVAL");
 }
@@ -120,163 +198,114 @@ void V(int semnum) {
     CHECK_ERR(semop(sem_id, &op, 1), ERR_SEM_OP, "semop V");
 }
 
-/* ---------- KOMUNIKATY ---------- */
-void send_premium_order(int table_id, int price) {
-    struct PremiumMsg msg;
-    msg.mtype = MSG_PREMIUM_TYPE;
-    msg.table_id = table_id;
-    msg.dish_price = price;
+/* ---------- QUEUES (VIP / NORMAL) ---------- */
 
-    CHECK_ERR(msgsnd(msg_id, &msg, sizeof(struct PremiumMsg) - sizeof(long), 0),ERR_IPC_MSG,"msgsnd premium");
+bool queue_push(pid_t groupPid, bool vipStatus) {
+    bool success = false;
+
+    P(SEM_MUTEX_QUEUE);
+
+    if (vipStatus) {
+        if (state->vipQueue.count < MAX_QUEUE) {
+            state->vipQueue.groupPid[state->vipQueue.count++] = groupPid;
+            success = true;
+        }
+    }
+    else {
+        if (state->normalQueue.count < MAX_QUEUE) {
+            state->normalQueue.groupPid[state->normalQueue.count++] = groupPid;
+            success = true;
+        }
+    }
+
+    V(SEM_MUTEX_QUEUE);
+
+    if (success) {
+        if (vipStatus)
+            V(SEM_QUEUE_USED_VIP);
+        else
+            V(SEM_QUEUE_USED_NORMAL);
+    }
+
+    return success;
 }
 
-int recv_premium_order(struct PremiumMsg* msg) {
-    int ret = msgrcv(msg_id,msg,sizeof(struct PremiumMsg) - sizeof(long),MSG_PREMIUM_TYPE,0);
-    CHECK_ERR(ret, ERR_IPC_MSG, "msgrcv premium");
-    return ret;
-}
 
+/*int queue_pop(int requiredSize, bool vipSuitable) {
+    int groupID = -1;
 
-/* ---------- IPC INIT ---------- */
+    P(SEM_MUTEX_QUEUE);
+
+    int* q = vipSuitable ? state->vipQueue.groupID : state->normalQueue.groupID;
+    int* count = vipSuitable ? &state->vipQueue.count : &state->normalQueue.count;
+
+    if (*count > 0) {
+        groupID = q[0];
+        for (int i = 1; i < *count; i++) q[i - 1] = q[i];
+        (*count)--;
+
+        if (vipSuitable) V(SEM_QUEUE_FREE_VIP);
+        else V(SEM_QUEUE_FREE_NORMAL);
+    }
+
+    V(SEM_MUTEX_QUEUE);
+
+    char buffer[512];
+    int len = snprintf(buffer, sizeof(buffer), "QUEUE: pop returning groupID=%d", groupID);
+    fifo_log(buffer);
+
+    return groupID;
+}*/
+
+/* ---------- SHM / SEM / MSG INIT ---------- */
 
 int ipc_init() {
-    /* KEYS */
-    SHM_KEY = ftok(".", 'A');
-    CHECK_ERR(SHM_KEY, ERR_IPC_INIT, "ftok SHM");
+    SHM_KEY = ftok(".", 'A'); CHECK_ERR(SHM_KEY, ERR_IPC_INIT, "ftok SHM");
+    SEM_KEY = ftok(".", 'B'); CHECK_ERR(SEM_KEY, ERR_IPC_INIT, "ftok SEM");
 
-    SEM_KEY = ftok(".", 'B');
-    CHECK_ERR(SEM_KEY, ERR_IPC_INIT, "ftok SEM");
-
-    MSG_KEY = ftok(".", 'C');
-    CHECK_ERR(MSG_KEY, ERR_IPC_INIT, "ftok MSG");
-
-    /* SHM */
     shm_id = shmget(SHM_KEY, sizeof(RestaurantState), IPC_CREAT | 0600);
     CHECK_ERR(shm_id, ERR_IPC_INIT, "shmget");
 
     state = (RestaurantState*)shmat(shm_id, NULL, 0);
     CHECK_NULL(state, ERR_IPC_INIT, "shmat");
 
-    /* MSG */
-    msg_id = msgget(MSG_KEY, IPC_CREAT | 0600);
-    CHECK_ERR(msg_id, ERR_IPC_INIT, "msgget premium");
-
-    /* SEM */
     sem_id = semget(SEM_KEY, SEM_COUNT, IPC_CREAT | 0600);
     CHECK_ERR(sem_id, ERR_IPC_INIT, "semget");
 
-    sem_set(SEM_MUTEX_STATE, 1);      // mutex binarny
-    sem_set(SEM_MUTEX_QUEUE, 1);      // mutex binarny
+    sem_set(SEM_MUTEX_STATE, 1);
+    sem_set(SEM_MUTEX_QUEUE, 1);
     sem_set(SEM_BELT_SLOTS, BELT_SIZE);
     sem_set(SEM_BELT_ITEMS, 0);
     sem_set(SEM_TABLES, TABLE_COUNT);
-    sem_set(SEM_QUEUE_FREE_VIP, MAX_QUEUE / 2);
-    sem_set(SEM_QUEUE_FREE_NORMAL, MAX_QUEUE / 2);
-    sem_set(SEM_QUEUE_USED_NORMAL, 0);
+    sem_set(SEM_QUEUE_FREE_VIP, MAX_QUEUE);
+    sem_set(SEM_QUEUE_FREE_NORMAL, MAX_QUEUE);
     sem_set(SEM_QUEUE_USED_VIP, 0);
+    sem_set(SEM_QUEUE_USED_NORMAL, 0);
 
-    /* FIFO */
+    req_qid = create_queue(REQ_QUEUE_PROJ);   // service â†’ clients
+    resp_qid = create_queue(RESP_QUEUE_PROJ);  // clients â†’ service
+
     fifo_init();
     fifo_init_close_signal();
-
-    /* INIT STATE */
     memset(state, 0, sizeof(RestaurantState));
 
     return 0;
 }
 
-/* ---------- ACCESS ---------- */
-
 RestaurantState* get_state() {
     return state;
-}
-
-void queue_push(Group* grp) {
-    if (grp->isVip) {
-        P(SEM_QUEUE_FREE_VIP);
-
-        P(SEM_MUTEX_QUEUE);
-        for (int i = state->vip_queue.count; i > 0; --i) {
-            state->vip_queue.queue[i] = state->vip_queue.queue[i - 1];
-        }
-        state->vip_queue.queue[0] = grp;
-        state->vip_queue.count++;
-        V(SEM_MUTEX_QUEUE);
-
-        V(SEM_QUEUE_USED_VIP);
-    }
-    else {
-        P(SEM_QUEUE_FREE_NORMAL);
-
-        P(SEM_MUTEX_QUEUE);
-        for (int i = state->normal_queue.count; i > 0; --i) {
-            state->normal_queue.queue[i] = state->normal_queue.queue[i - 1];
-        }
-        state->normal_queue.queue[0] = grp;
-        state->normal_queue.count++;
-        V(SEM_MUTEX_QUEUE);
-
-        V(SEM_QUEUE_USED_NORMAL);
-    }
-}
-
-static Group* pop_from_queue(GroupQueue* q, int required_size) {
-    for (int i = 0; i < q->count; ++i) {
-        if (q->queue[i]->groupSize <= required_size) {
-            Group* grp = q->queue[i];
-
-            for (int j = i + 1; j < q->count; ++j)
-                q->queue[j - 1] = q->queue[j];
-
-            q->count--;
-            return grp;
-        }
-    }
-    return NULL;
-}
-
-Group* queue_pop(int required_size, bool vipSuitable) {
-    Group* grp = NULL;
-
-    P(SEM_MUTEX_QUEUE);
-    if (vipSuitable)
-        grp = pop_from_queue(&state->vip_queue, required_size);
-    else
-        grp = pop_from_queue(&state->normal_queue, required_size);
-
-    if (grp != NULL) {
-        if (vipSuitable)
-            V(SEM_QUEUE_FREE_VIP);
-        else
-            V(SEM_QUEUE_FREE_NORMAL);
-    }
-    V(SEM_MUTEX_QUEUE);
-
-    return grp;
 }
 
 /* ---------- CLEANUP ---------- */
 
 void ipc_cleanup() {
-    if (state && state != (void*)-1) {
-        shmdt(state);
-        state = NULL;
-    }
+    if (state && state != (void*)-1) { shmdt(state); state = NULL; }
+    if (shm_id != -1) { shmctl(shm_id, IPC_RMID, NULL); shm_id = -1; }
+    if (sem_id != -1) { semctl(sem_id, 0, IPC_RMID); sem_id = -1; }
+    if (msg_id != -1) { msgctl(msg_id, IPC_RMID, NULL); msg_id = -1; }
+    if (req_qid != -1) msgctl(req_qid, IPC_RMID, nullptr);
+    if (resp_qid != -1) msgctl(resp_qid, IPC_RMID, nullptr);
 
-    if (shm_id != -1) {
-        shmctl(shm_id, IPC_RMID, NULL);
-        shm_id = -1;
-    }
-
-    if (sem_id != -1) {
-        semctl(sem_id, 0, IPC_RMID);
-        sem_id = -1;
-    }
-
-    if (msg_id != -1) {
-        msgctl(msg_id, IPC_RMID, NULL);
-        msg_id = -1;
-    }
     unlink(FIFO_PATH);
     unlink(CLOSE_FIFO);
 }

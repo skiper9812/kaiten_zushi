@@ -1,182 +1,205 @@
-#include "service.h"
+﻿#include "service.h"
 
-static int check_close_signal() {
-    char buf[32];
-    int fd = open(CLOSE_FIFO, O_RDONLY | O_NONBLOCK);
-    if (fd == -1) return 0; // FIFO nie istnieje
-    int ret = read(fd, buf, sizeof(buf));
-    close(fd);
-    if (ret > 0 && strcmp(buf, "CLOSE_RESTAURANT") == 0)
-        return 1; // sygna� zamkni�cia
-    return 0;
-}
-
-void assign_tables(RestaurantState* state) {
+int assign_table(RestaurantState* state, bool vipStatus, int groupSize, int groupID) {
     for (int i = 0; i < TABLE_COUNT; i++) {
-
         P(SEM_MUTEX_STATE);
+
         Table* t = &state->tables[i];
+
+        // VIP restriction – tylko stoliki jednoosobowe są zabronione
+        if (vipStatus && t->capacity == 1) {
+            V(SEM_MUTEX_STATE);
+            continue;
+        }
+
         int freeSeats = t->capacity - t->occupiedSeats;
-        V(SEM_MUTEX_STATE);
 
-        if (freeSeats <= 0)
-            continue;
+        // CASE A: pusty stolik
+        if (t->occupiedSeats == 0 && freeSeats >= groupSize) {
+            t->slotGroupID[0] = groupID;
+            t->slotGroupID[1] = -1;
 
-        Group* grp = queue_pop(freeSeats, true);
-        if (!grp)
-            grp = queue_pop(freeSeats, false);
+            t->occupiedSeats = groupSize;
+            state->currentGuestCount += groupSize;
+            if (vipStatus)
+                state->currentVIPCount++;
 
-        if (grp) {
-            char buf[128];
-            snprintf(buf, sizeof(buf), "SERVICE: picked group %d from queue", grp->groupID);
-            fifo_log(buf);
-        }
-
-        if (!grp)
-            continue;
-
-        P(SEM_MUTEX_STATE);
-
-        freeSeats = t->capacity - t->occupiedSeats;
-
-        if (freeSeats < grp->groupSize) {
             V(SEM_MUTEX_STATE);
-            continue;
+            return i;
         }
 
-        if (t->occupiedSeats == 0) {
-            P(SEM_TABLES);
-            t->group[0] = grp;
-            fifo_log("SERVICE: assigned group to empty slot 0");
-        }
-        else if (t->group[0] &&
-            !t->group[1] &&
-            t->group[0]->groupSize == grp->groupSize) {
-            t->group[1] = grp;
-            fifo_log("SERVICE: assigned group to empty slot 1");
-        }
-        else {
-            V(SEM_MUTEX_STATE);
-            fifo_log("SERVICE: could not assign group due to size mismatch or full table");
-            continue;
-        }
+        // CASE B: jeden slot zajęty
+        if (t->slotGroupID[1] < 0 && freeSeats >= groupSize) {
+            int firstGroupID = t->slotGroupID[0];
 
-        t->occupiedSeats += grp->groupSize;
-        state->currentGuestCount += grp->groupSize;
-        if (grp->isVip) state->currentVIPCount++;
+            if (t->occupiedSeats == groupSize) {
+                t->slotGroupID[1] = groupSize;
+                t->occupiedSeats += groupSize;
+
+                state->currentGuestCount += groupSize;
+                if (vipStatus)
+                    state->currentVIPCount++;
+
+                V(SEM_MUTEX_STATE);
+                return i;
+            }
+        }
 
         V(SEM_MUTEX_STATE);
-
-        if (grp->isVip) V(SEM_QUEUE_USED_VIP);
-        else V(SEM_QUEUE_USED_NORMAL);
     }
+
+    return -1;
 }
 
-void free_table(RestaurantState* state, Group* grp) {
+void handle_assign_group(RestaurantState* state, pid_t groupPid) {
+    char logBuffer[256];
+    time_t timestamp;
 
-    for (int i = 0; i < TABLE_COUNT; i++) {
-        Table* t = &state->tables[i];
-        if (t->group[0] == grp) {
-            t->group[0] = t->group[1];
-            t->group[1] = NULL;
-        }
-        else if (t->group[1] == grp) {
-            t->group[1] = NULL;
-        }
+    // ===== 1. zapytanie clients o dane grupy (po pid) =====
+    ServiceRequest req{};
+    req.mtype = groupPid;
+    req.type = REQ_GET_GROUP;
+    req.extraData = 0;
 
-        if (t->group[0] == NULL && t->group[1] == NULL)
-            t->occupiedSeats = 0;
-        else
-            t->occupiedSeats = 0 + (t->group[0] ? t->group[0]->groupSize : 0)
-            + (t->group[1] ? t->group[1]->groupSize : 0);
+    queue_send_request(req);
+
+    ClientResponse resp{};
+    queue_recv_response(resp);
+
+    // ===== 2. sprawdzenie miejsca w lokalu =====
+    P(SEM_MUTEX_STATE);
+    int freeSeatsTotal = TOTAL_SEATS - state->currentGuestCount;
+    V(SEM_MUTEX_STATE);
+
+    if (freeSeatsTotal < resp.groupSize) {
+        ServiceRequest reject{};
+        reject.mtype = groupPid;
+        reject.type = REQ_GROUP_REJECT;
+
+        queue_send_request(reject);
+
+        timestamp = time(NULL);
+        snprintf(logBuffer, sizeof(logBuffer),
+            "[%ld] [GROUP REJECTED] pid=%d groupID=%d size=%d reason=NO_SPACE_IN_RESTAURANT",
+            timestamp, groupPid, resp.groupID, resp.groupSize
+        );
+        fifo_log(logBuffer);
+        return;
     }
 
-    state->currentGuestCount -= grp->groupSize;
-    if (grp->isVip) state->currentVIPCount--;
+    // ===== 3. próba przydziału stolika =====
+    int assignedTable = assign_table(state, resp.vipStatus, resp.groupSize, resp.groupID);
 
-    // aktualizacja statystyk sprzeda�y
-    for (int c = 0; c < COLOR_COUNT; c++)
-        state->soldCount[c] += grp->eatenCount[c];
+    if (assignedTable) {
+        snprintf(logBuffer, sizeof(logBuffer),
+            "[%ld] [TABLE ASSIGNED] table=%d pid=%d groupID=%d size=%d vip=%d",
+            timestamp, assignedTable, groupPid, resp.groupID, resp.groupSize, resp.vipStatus
+        );
+        fifo_log(logBuffer);
+        return;
+    }
+    
+
+    // ===== 4. brak stolika → kolejka =====
+    bool queued = queue_push(groupPid, resp.vipStatus);
+
+    if (queued) {
+        timestamp = time(NULL);
+        snprintf(logBuffer, sizeof(logBuffer),
+            "[%ld] [GROUP QUEUED] pid=%d groupID=%d size=%d vip=%d",
+            timestamp, groupPid, resp.groupID, resp.groupSize, resp.vipStatus
+        );
+        fifo_log(logBuffer);
+        return;
+    }
+
+    // ===== 5. brak miejsca w kolejce =====
+    ServiceRequest reject{};
+    reject.mtype = groupPid;
+    reject.type = REQ_GROUP_REJECT;
+    reject.extraData = 0;
+
+    queue_send_request(reject);
+}
+
+/*void free_table(RestaurantState* state, int groupID) {
+    IPCRequestMessage req{};
+    req.mtype = 1;
+    req.req.type = REQ_GET_GROUP_INFO;
+    req.req.groupID = groupID;
+
+    ipc_send_request(req);
+
+    IPCResponseMessage resp{};
+    ipc_recv_response(resp);
+    if (resp.resp.status != 0) return;
+
+    P(SEM_MUTEX_STATE);
+    state->currentGuestCount -= resp.resp.groupSize;
+    if (resp.resp.vipStatus) state->currentVIPCount--;
+    V(SEM_MUTEX_STATE);
 
     V(SEM_TABLES);
-
-    // logowanie
-    char buffer[128];
-    snprintf(buffer, sizeof(buffer),
-        "SERVICE: Group %d left the table | freed seats=%d",
-        grp->groupID, grp->groupSize);
-    fifo_log(buffer);
-}
+}*/
 
 void start_service() {
-    /* REGISTER SIGNALS */
     signal(SIGUSR1, handle_manager_signal);
     signal(SIGUSR2, handle_manager_signal);
     signal(SIGTERM, handle_manager_signal);
 
-    RestaurantState* state = get_state();
     fifo_open_write();
 
-    
+    req_qid = connect_queue(REQ_QUEUE_PROJ);
+    resp_qid = connect_queue(RESP_QUEUE_PROJ);
 
-    //for (int i = 0; i < 10; ++i) {
-    while(true){
-        fifo_log("SERVICE: start iteration of service loop");
+    RestaurantState* state = get_state();
 
-        int do_accel = 0;
-        int do_slow = 0;
-        int do_evacuate = 0;
+    while (true) {
+        // Blokujące odbieranie komunikatu od grupy
+        ClientRequest req{};
+        queue_recv_request(req);  // blokuje, dopóki nie przyjdzie komunikat
 
-        assign_tables(state);
+        char logBuffer[256];
+        time_t timestamp = time(NULL);
 
-        P(SEM_MUTEX_STATE);
+        // Logowanie przychodzącego żądania
+        snprintf(logBuffer, sizeof(logBuffer),
+            "[%ld] [SERVICE RECV] groupID=%d, type=%d, extraData[pid]=%d",
+            timestamp, req.groupID, req.type, req.extraData);
+        fifo_log(logBuffer);
 
-        for (int i = 0; i < TABLE_COUNT; i++) {
-            Table* t = &state->tables[i];
-
-            for (int g = 0; g < 2; g++) {
-                Group* grp = t->group[g];
-                if (grp && grp->dishesToEat == 0) {
-                    free_table(state, grp);
-                }
-            }
-        }
-        V(SEM_MUTEX_STATE);
-
-        P(SEM_MUTEX_STATE);
-
-        if (state->sig_accelerate) {
-            do_accel = 1;
-            state->sig_accelerate = 0;
-        }
-
-        if (state->sig_slowdown) {
-            do_slow = 1;
-            state->sig_slowdown = 0;
+        // Obsługa komunikatu wg typu
+        switch (req.type) {
+        case REQ_ASSIGN_GROUP:
+            handle_assign_group(state, req.extraData);
+            break;
+        case REQ_CONSUME_DISH:
+            //handle_service_consume_dish(req, state);
+            break;
+        case REQ_GROUP_DONE:
+            //handle_service_group_done(req, state);
+            break;
+        default:
+            // nieznany typ, ignorujemy lub logujemy
+            break;
         }
 
-        if (state->sig_evacuate) {
-            do_evacuate = 1;
-            state->sig_evacuate = 0;
-        }
-
-        V(SEM_MUTEX_STATE);
-
-        if (do_accel) {
-            /* przyspieszenie */
-        }
-
-        if (do_slow) {
-            /* spowolnienie */
-        }
-
-        if (do_evacuate) {
-            /* natychmiastowe wyj�cie */
-        }
-
-        sleep(1);
+        //assign_tables(state);  // przydzielanie stolików
     }
 
     fifo_close_write();
 }
 
+
+
+
+static int check_close_signal() {
+    char buf[32];
+    int fd = open(CLOSE_FIFO, O_RDONLY | O_NONBLOCK);
+    if (fd == -1) return 0;
+    int ret = read(fd, buf, sizeof(buf));
+    close(fd);
+    if (ret > 0 && strcmp(buf, "CLOSE_RESTAURANT") == 0)
+        return 1;
+    return 0;
+}
