@@ -23,27 +23,6 @@ static void handle_create_group() {
     }
 }
 
-void handle_consume_dish(Group& g, int dishCount) {
-    char logBuffer[256];
-    time_t timestamp = time(NULL);
-
-    // Tworzymy komunikat do service
-    ClientRequest req{};
-    req.mtype = CONSUME;                  // typ wiadomości w kolejce
-    req.type = REQ_CONSUME_DISH;    // żądanie konsumpcji
-    req.groupID = g.getGroupID();
-    req.extraData = dishCount;      // liczba dań do zjedzenia w tym kroku
-
-    queue_send_request(req);         // wysyłamy do service
-
-    // Logujemy chęć konsumpcji
-    snprintf(logBuffer, sizeof(logBuffer),
-        "[%ld] [REQUEST CONSUME] groupID=%d, pid=%d, dishesRequested=%d",
-        timestamp, g.getGroupID(), getpid(), dishCount);
-    fifo_log(logBuffer);
-}
-
-
 void handle_group_done(const Group& g) {
     char logBuffer[256];
     time_t timestamp = time(NULL);
@@ -52,14 +31,15 @@ void handle_group_done(const Group& g) {
     ClientRequest req{};
     req.mtype = DONE;                  // typ wiadomości w kolejce
     req.type = REQ_GROUP_DONE;      // żądanie zakończenia
+    req.pid = getpid();
     req.groupID = g.getGroupID();
-    req.extraData = 0;              // dodatkowo można przesłać PID lub inne info
+    memcpy(req.eatenCount, g.getEatenCount(), sizeof(req.eatenCount));
 
     queue_send_request(req);         // wysyłamy do service
 
     // Logujemy intencję zakończenia
     snprintf(logBuffer, sizeof(logBuffer),
-        "[%ld] [REQUEST DONE] groupID=%d, pid=%d",
+        "\033[38;5;118m[%ld] [CLIENT] REQUEST DONE | groupID=%d, pid=%d\033[0m",
         timestamp, g.getGroupID(), getpid());
     fifo_log(logBuffer);
 }
@@ -85,7 +65,7 @@ static void handle_reject_group(const Group& g) {
     time_t timestamp = time(NULL);
 
     snprintf(logBuffer, sizeof(logBuffer),
-        "[%ld] [GROUP REJECTED] pid=%d groupID=%d size=%d vip=%d dishes=%d",
+        "\033[38;5;118m[%ld] [GROUP REJECTED] pid=%d groupID=%d size=%d vip=%d dishes=%d\033[0m",
         timestamp, getpid(), g.getGroupID(), g.getGroupSize(), g.getVipStatus(), g.getDishesToEat()
     );
 
@@ -94,12 +74,40 @@ static void handle_reject_group(const Group& g) {
     _exit(0);
 }
 
+void handle_table_assigned(Group& g, int tableIndex) {
+    g.setTableIndex(tableIndex);
+}
+
+void handle_consume_dish(Group& g) {
+    P(SEM_MUTEX_STATE);
+
+    int tableIndex = g.getTableIndex();   // stolik grupy
+    int idx = (state->beltHead + tableIndex) % BELT_SIZE;
+    Dish& d = state->belt[idx];
+
+    if (d.dishID != -1) { // -1 oznacza brak talerzyka
+        P(SEM_BELT_ITEMS);
+        g.consumeOneDish(d.color);
+        d.dishID = -1;   // oznaczamy, że talerzyk został zdjęty z taśmy
+        V(SEM_BELT_SLOTS);
+
+        char logBuffer[256];
+        time_t timestamp = time(NULL);
+        snprintf(logBuffer, sizeof(logBuffer),
+            "\033[38;5;118m[%ld] [CLIENT] CONSUMED DISH | groupID=%d, pid=%d, color=%s, price=%d, dishesToEat=%d\033[0m",
+            timestamp, g.getGroupID(), getpid(), colorToString(d.color), d.price, g.getDishesToEat());
+        fifo_log(logBuffer);
+    }
+
+    V(SEM_MUTEX_STATE);
+}
+
 // ===== statyczne pola Group =====
 int Group::nextGroupID = 0;
 
 void group_loop(Group& g) {
-    req_qid = connect_queue(REQ_QUEUE_PROJ);
-    resp_qid = connect_queue(RESP_QUEUE_PROJ);
+    client_qid = connect_queue(CLIENT_REQ_QUEUE);
+    service_qid = connect_queue(SERVICE_REQ_QUEUE);
 
     char logBuffer[256];
     time_t timestamp = time(NULL);
@@ -108,21 +116,36 @@ void group_loop(Group& g) {
     ClientRequest request{};
     request.mtype = ASSIGN;          // typ wiadomości w kolejce (dowolnie ustalony)
     request.type = REQ_ASSIGN_GROUP;         // typ żądania CREATE_GROUP
+    request.pid = getpid();            // PID procesu grupy
     request.groupID = g.getGroupID();
-    request.extraData = getpid();            // PID procesu grupy
+    memset(request.eatenCount, 0, sizeof(request.eatenCount));
 
-    queue_send_request(request);             // wysyłamy do service
+    queue_send_request(request);
 
     // Logowanie powstania grupy
     snprintf(logBuffer, sizeof(logBuffer),
-        "[%ld] [GROUP CREATED] groupID=%d, pid=%d, groupSize=%d, dishesLeft=%d, vipStatus=%d",
+        "\033[38;5;118m[%ld] [CLIENTS]: GROUP CREATED | groupID=%d, pid=%d, groupSize=%d, dishesLeft=%d, vipStatus=%d\033[0m",
         timestamp, g.getGroupID(), getpid(), g.getGroupSize(), g.getDishesToEat(), g.getVipStatus());
     fifo_log(logBuffer);
-    // =================================================================
+
+    ServiceRequest req{};
+    queue_recv_request(req);   // odbiera request od service
+
+    if(req.type == REQ_GET_GROUP) handle_get_group(g);
 
     // ===== Główna pętla symulacji grupy =====
-    while (!g.isFinished()) {
-        // tutaj decyzje grupy: consumeDish(), groupDone(), etc.
+    while (g.getTableIndex() == -1) {
+        if (g.isFinished()) {
+            handle_group_done(g); // wysyła request do service, przekazując eatenCount
+            break;                // koniec pętli – proces grupy kończy działanie
+        }
+
+        // losowa konsumpcja
+        //if (rand() % 100 < 80) { // 50% szansa zjedzenia dania w tym kroku
+            handle_consume_dish(g);
+        //}
+
+        // obsługa komunikatów od Service
         ServiceRequest req{};
         queue_recv_request(req);   // odbiera request od service
 
@@ -133,12 +156,16 @@ void group_loop(Group& g) {
         case REQ_GROUP_REJECT:
             handle_reject_group(g);
             break;
+        case REQ_GROUP_ASSIGNED:
+            handle_table_assigned(g, req.extraData);
+            break;
         default:
             break;
         }
 
-        sleep(1);  // symulacja czasu między decyzjami
+        usleep(1);
     }
+
 }
 
 // =====================================================
@@ -146,12 +173,13 @@ void group_loop(Group& g) {
 // =====================================================
 
 void start_clients() {
+    signal(SIGCHLD, SIG_IGN);
     fifo_open_write();
     RestaurantState* state = get_state();
 
     while (true) {
         // losowy odstęp czasowy między przyjściem grup
-        sleep(rand() % 3 + 1);  // np. 1-3 sekundy
+        sleep(rand() % 3);
 
         handle_create_group();
 

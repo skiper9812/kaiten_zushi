@@ -3,7 +3,7 @@
 #include "common.h"
 
 // =====================================================
-// Group – czysty obiekt danych (TYLKO clients.cpp)
+// Group – czysty obiekt danych
 // =====================================================
 
 class Group {
@@ -14,13 +14,14 @@ private:
     int childCount;
     bool vipStatus;
     int dishesToEat;
+    int tableIndex;
     int eatenCount[COLOR_COUNT];
 
 public:
     static int nextGroupID;
 
     // ===== tworzenie grupy =====
-    Group() {
+    Group() : tableIndex(-1) {
         groupID = nextGroupID++;
         groupSize = rand() % 4 + 1;
         vipStatus = (rand() % 100) < 2;
@@ -45,9 +46,15 @@ public:
     int  getChildCount() const { return childCount; }
     bool getVipStatus() const { return vipStatus; }
     int  getDishesToEat() const { return dishesToEat; }
+    int  getTableIndex() const { return tableIndex; }
+    const int* getEatenCount() const { return eatenCount; }
+
+    // ===== settery =====
+    void setTableIndex(int idx) { tableIndex = idx; }
 
     // ===== mutatory logiczne =====
-    void consumeOneDish(int colorIndex) {
+    void consumeOneDish(colors c) {
+        int colorIndex = colorToIndex(c);
         if (dishesToEat <= 0) return;
         dishesToEat--;
         if (colorIndex >= 0 && colorIndex < COLOR_COUNT)

@@ -21,8 +21,8 @@ int shm_id = -1;
 int sem_id = -1;
 int msg_id = -1;
 
-int req_qid = -1;
-int resp_qid = -1;
+int client_qid = -1;
+int service_qid = -1;
 
 RestaurantState* state = nullptr;
 
@@ -56,25 +56,25 @@ void remove_queue(char proj_id) {
     CHECK_ERR(msgctl(proj_id, IPC_RMID, nullptr), ERR_IPC_MSG, "msgctl remove failed");
 }
 
-void queue_send_request(ServiceRequest& msg) {
+void queue_send_request(const ServiceRequest& msg) {
     CHECK_ERR(
-        msgrcv(req_qid, &msg, sizeof(ServiceRequest) - sizeof(long), 0, 0),
+        msgsnd(service_qid, &msg, sizeof(ServiceRequest) - sizeof(long), 0),
         ERR_IPC_MSG,
-        "msgrcv request failed"
+        "msgsnd request failed"
     );
 }
 
 void queue_recv_request(ServiceRequest& msg) {
     CHECK_ERR(
-        msgrcv(req_qid, &msg, sizeof(ServiceRequest) - sizeof(long), 0, 0),
+        msgrcv(service_qid, &msg, sizeof(ServiceRequest) - sizeof(long), 0, 0),
         ERR_IPC_MSG,
-        "msgrcv request failed"
+        "msgrcv request faileddd"
     );
 }
 
 void queue_send_request(const ClientRequest& msg) {
     CHECK_ERR(
-        msgsnd(req_qid, &msg, sizeof(ClientRequest) - sizeof(long), 0),
+        msgsnd(client_qid, &msg, sizeof(ClientRequest) - sizeof(long), 0),
         ERR_IPC_MSG,
         "msgsnd request failed"
     );
@@ -82,7 +82,7 @@ void queue_send_request(const ClientRequest& msg) {
 
 void queue_recv_request(ClientRequest& msg) {
     CHECK_ERR(
-        msgrcv(req_qid, &msg, sizeof(ClientRequest) - sizeof(long), 0, 0),
+        msgrcv(client_qid, &msg, sizeof(ClientRequest) - sizeof(long), 0, 0),
         ERR_IPC_MSG,
         "msgrcv request failed"
     );
@@ -90,7 +90,7 @@ void queue_recv_request(ClientRequest& msg) {
 
 void queue_send_response(const ClientResponse& msg) {
     CHECK_ERR(
-        msgsnd(resp_qid, &msg, sizeof(ClientResponse) - sizeof(long), 0),
+        msgsnd(client_qid, &msg, sizeof(ClientResponse) - sizeof(long), 0),
         ERR_IPC_MSG,
         "msgsnd response failed"
     );
@@ -98,7 +98,7 @@ void queue_send_response(const ClientResponse& msg) {
 
 void queue_recv_response(ClientResponse& msg) {
     CHECK_ERR(
-        msgrcv(resp_qid, &msg, sizeof(IPCRequestMessage) - sizeof(long), 0, 0),
+        msgrcv(client_qid, &msg, sizeof(ClientResponse) - sizeof(long), 0, 0),
         ERR_IPC_MSG,
         "msgrcv response failed"
     );
@@ -133,12 +133,14 @@ void fifo_close_write() {
 }
 
 void fifo_log(const char* msg) {
+    P(SEM_MUTEX_LOGS);
     CHECK_ERR(fifo_fd_write, ERR_IPC_INIT, "fifo open write");
     char buffer[512];
     int len = snprintf(buffer, sizeof(buffer), "%s\n", msg);
     if (write(fifo_fd_write, buffer, len) == -1) {
         fprintf(stderr, "FIFO write error: %s\n", strerror(errno));
     }
+    V(SEM_MUTEX_LOGS);
 }
 
 void logger_loop(const char* filename) {
@@ -274,6 +276,7 @@ int ipc_init() {
 
     sem_set(SEM_MUTEX_STATE, 1);
     sem_set(SEM_MUTEX_QUEUE, 1);
+    sem_set(SEM_MUTEX_LOGS, 1);
     sem_set(SEM_BELT_SLOTS, BELT_SIZE);
     sem_set(SEM_BELT_ITEMS, 0);
     sem_set(SEM_TABLES, TABLE_COUNT);
@@ -282,8 +285,8 @@ int ipc_init() {
     sem_set(SEM_QUEUE_USED_VIP, 0);
     sem_set(SEM_QUEUE_USED_NORMAL, 0);
 
-    req_qid = create_queue(REQ_QUEUE_PROJ);   // service → clients
-    resp_qid = create_queue(RESP_QUEUE_PROJ);  // clients → service
+    client_qid = create_queue(CLIENT_REQ_QUEUE);
+    service_qid = create_queue(SERVICE_REQ_QUEUE);
 
     fifo_init();
     fifo_init_close_signal();
@@ -303,8 +306,8 @@ void ipc_cleanup() {
     if (shm_id != -1) { shmctl(shm_id, IPC_RMID, NULL); shm_id = -1; }
     if (sem_id != -1) { semctl(sem_id, 0, IPC_RMID); sem_id = -1; }
     if (msg_id != -1) { msgctl(msg_id, IPC_RMID, NULL); msg_id = -1; }
-    if (req_qid != -1) msgctl(req_qid, IPC_RMID, nullptr);
-    if (resp_qid != -1) msgctl(resp_qid, IPC_RMID, nullptr);
+    if (client_qid != -1) msgctl(client_qid, IPC_RMID, nullptr);
+    if (service_qid != -1) msgctl(service_qid, IPC_RMID, nullptr);
 
     unlink(FIFO_PATH);
     unlink(CLOSE_FIFO);

@@ -32,10 +32,12 @@
 //Reszta sta³ych
 #define TOTAL_SEATS (X1 + 2 * X2 + 3 * X3 + 4 * X4)
 #define TABLE_COUNT (X1 + X2 + X3 + X4)
-#define BELT_SIZE 10
+#define MAX_DISHES_ON_BELT 10
+#define BELT_SIZE 16
 #define MSG_PREMIUM_TYPE 1
 #define MAX_QUEUE 20
 #define COLOR_COUNT 6
+#define MAX_TABLE_SLOTS 4
 
 typedef enum { WHITE = 0, YELLOW, GREEN, RED, BLUE, PURPLE } colors;
 
@@ -73,11 +75,17 @@ struct GroupQueue {
     int count;
 };
 
+struct TableSlot {
+    pid_t pid;
+    int size;
+    bool vipStatus;
+};
+
 struct Table {
     int tableID;
     int capacity;
     int occupiedSeats;
-    int slotGroupID[2];
+    TableSlot slots[MAX_TABLE_SLOTS];
 };
 
 struct Dish {
@@ -105,11 +113,11 @@ struct RestaurantState {
     GroupQueue normalQueue;
     GroupQueue vipQueue;
 
+    int remainingCount[COLOR_COUNT];
     int soldCount[COLOR_COUNT];
     int soldValue[COLOR_COUNT];
     int revenue;
-    int remainingCount[COLOR_COUNT];
-
+    
     int sig_accelerate;
     int sig_slowdown;
     int sig_evacuate;
@@ -118,6 +126,7 @@ struct RestaurantState {
 enum {
     SEM_MUTEX_STATE = 0,
     SEM_MUTEX_QUEUE,
+    SEM_MUTEX_LOGS,
     SEM_BELT_SLOTS,
     SEM_BELT_ITEMS,
     SEM_TABLES,

@@ -15,8 +15,8 @@ void start_manager() {
 
     RestaurantState* state = get_state();
     fifo_open_write();
-    req_qid = connect_queue(REQ_QUEUE_PROJ);
-    resp_qid = connect_queue(RESP_QUEUE_PROJ);
+    client_qid = connect_queue(CLIENT_REQ_QUEUE);
+    service_qid = connect_queue(SERVICE_REQ_QUEUE);
 
     /* INIT STATE */
     P(SEM_MUTEX_STATE);
@@ -25,31 +25,41 @@ void start_manager() {
     state->beltHead = 0;
     state->beltTail = 0;
     state->nextDishID = 1;
+    
+        for (int i = 0; i < TABLE_COUNT; ++i) {
+            Table& t = state->tables[i];
 
-    for (int i = 0; i < TABLE_COUNT; ++i) {
-        state->tables[i].tableID = i;
+            t.tableID = i;
+            t.occupiedSeats = 0;
 
-        if (i < X1)
-            state->tables[i].capacity = 1;
-        else if (i < X1 + X2)
-            state->tables[i].capacity = 2;
-        else if (i < X1 + X2 + X3)
-            state->tables[i].capacity = 3;
-        else
-            state->tables[i].capacity = 4;
-    }
+            if (i < X1)
+                t.capacity = 1;
+            else if (i < X1 + X2)
+                t.capacity = 2;
+            else if (i < X1 + X2 + X3)
+                t.capacity = 3;
+            else
+                t.capacity = 4;
+
+            for (int s = 0; s < MAX_TABLE_SLOTS; ++s) {
+                t.slots[s].pid = -1;
+                t.slots[s].size = 0;
+                t.slots[s].vipStatus = false;
+            }
+        }
+
 
     V(SEM_MUTEX_STATE);
 
-    for (int i = 0; i < 10; i++) {
+    while (true) {
         int do_accel = 0;
         int do_slow = 0;
         int do_evacuate = 0;
 
 
-        //write(STDOUT_FILENO, buffer, strlen(buffer));
-
-        fifo_log("MANAGER: tick");
+        char buffer[128];
+        snprintf(buffer, sizeof(buffer),"\033[35m[%ld] [MANAGER] TICK\033[0m",time(NULL));
+        fifo_log(buffer);
 
         P(SEM_MUTEX_STATE);
 

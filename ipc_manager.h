@@ -1,28 +1,27 @@
 #pragma once
 #include "common.h"
 
-#define REQ_QUEUE_PROJ 'Q'
-#define RESP_QUEUE_PROJ 'R'
+#define CLIENT_REQ_QUEUE 'X'
+#define SERVICE_REQ_QUEUE 'Y'
 #define MAX_MSG_TEXT 128
 
-extern int req_qid;
-extern int resp_qid;
-
-
+extern int client_qid;
+extern int service_qid;
 
 // =====================================================
 // IPC – protokó³ clients <-> reszta systemu
 // =====================================================
 
 enum ClientRequestType {
-    REQ_ASSIGN_GROUP,
+    REQ_ASSIGN_GROUP = 1,
     REQ_CONSUME_DISH,
     REQ_GROUP_DONE
 };
 
 enum ServiceRequestType {
-    REQ_GET_GROUP,
-    REQ_GROUP_REJECT
+    REQ_GET_GROUP = 1,
+    REQ_GROUP_REJECT,
+    REQ_GROUP_ASSIGNED
 };
 
 typedef struct {
@@ -34,8 +33,9 @@ typedef struct {
 typedef struct {
     long mtype;
     ClientRequestType type;
+    pid_t pid;
     int groupID;
-    int extraData;     // np. colorIndex lub dodatkowa informacja
+    int eatenCount[COLOR_COUNT];
 } ClientRequest;
 
 typedef struct {
@@ -48,17 +48,6 @@ typedef struct {
     bool vipStatus;
     int dishesToEat;
 } ClientResponse;
-
-struct IPCRequestMessage {
-    long mtype;
-    ClientRequest req;
-};
-
-struct IPCResponseMessage {
-    long mtype;
-    ClientResponse resp;
-};
-
 
 struct PremiumMsg {
     long mtype;

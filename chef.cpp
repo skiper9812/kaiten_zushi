@@ -37,12 +37,18 @@ void chef_put_dish(RestaurantState* state, int target) {
 
     char buffer[128];
     snprintf(buffer, sizeof(buffer),
-        "CHEF: DISH %d cooked | color=%s price=%d targetTableID=%d",
-        plate.dishID, colorToString(plate.color), plate.price, plate.targetTableID);
+        "\033[38;5;214m[%ld] [DISH %d cooked] | color=%s price=%d targetTableID=%d\033[0m",
+        time(NULL), plate.dishID, colorToString(plate.color), plate.price, plate.targetTableID);
     fifo_log(buffer);
 }
 
+void advance_belt(RestaurantState* state) {
+    P(SEM_MUTEX_STATE);
 
+    state->beltHead = (state->beltHead + 1) % BELT_SIZE;
+
+    V(SEM_MUTEX_STATE);
+}
 
 
 void start_chef() {
@@ -51,16 +57,17 @@ void start_chef() {
     signal(SIGTERM, handle_manager_signal);
 
     RestaurantState* state = get_state();
-    req_qid = connect_queue(REQ_QUEUE_PROJ);
-    resp_qid = connect_queue(RESP_QUEUE_PROJ);
+    client_qid = connect_queue(CLIENT_REQ_QUEUE);
+    service_qid = connect_queue(SERVICE_REQ_QUEUE);
 
     fifo_open_write();
 
-    for (int i = 0; i < 100; i++) {
+    while (true) {
         int do_accel = 0;
         int do_slow = 0;
         int do_evacuate = 0;
 
+        advance_belt(state);
         chef_put_dish(state, -1);
 
         P(SEM_MUTEX_STATE);
