@@ -12,24 +12,33 @@ static int check_close_signal() {
 }
 
 void chef_put_dish(RestaurantState* state, int target) {
-    Dish plate;
-
-    P(SEM_BELT_SLOTS);
-
     int idx = rand() % 3 + (target == -1 ? 0 : 3);   // 1–3 basic, 4–6 premium
 
+    Dish plate;
     plate.color = colorFromIndex(idx);
     plate.price = priceForColor(plate.color);
     plate.targetTableID = target;
 
+    P(SEM_BELT_SLOTS);
+    P(SEM_MUTEX_BELT);
 
-    P(SEM_MUTEX_STATE);
-    plate.dishID = state->nextDishID++;
-    state->belt[state->beltTail] = plate;
-    state->beltTail = (state->beltTail + 1) % BELT_SIZE;
-    V(SEM_MUTEX_STATE);
+    Dish last = state->belt[BELT_SIZE - 1];
 
-    V(SEM_BELT_ITEMS);
+    for (int i = BELT_SIZE - 1; i > 0; --i)
+        state->belt[i] = state->belt[i - 1];
+
+    state->belt[0] = last;
+
+    Dish& slot = state->belt[0];
+
+    if (slot.dishID == 0) {
+        plate.dishID = state->nextDishID++;
+        slot = plate;
+        V(SEM_BELT_ITEMS);
+    } else
+        V(SEM_BELT_SLOTS);
+
+    V(SEM_MUTEX_BELT);
 
     /*if (target != -1) {
         send_premium_order(target, plate.price);
@@ -37,18 +46,11 @@ void chef_put_dish(RestaurantState* state, int target) {
 
     char buffer[128];
     snprintf(buffer, sizeof(buffer),
-        "\033[38;5;214m[%ld] [DISH %d cooked] | color=%s price=%d targetTableID=%d\033[0m",
+        "\033[38;5;214m[%ld] [CHEF]: DISH %d COOKED | color=%s price=%d targetTableID=%d\033[0m",
         time(NULL), plate.dishID, colorToString(plate.color), plate.price, plate.targetTableID);
     fifo_log(buffer);
 }
 
-void advance_belt(RestaurantState* state) {
-    P(SEM_MUTEX_STATE);
-
-    state->beltHead = (state->beltHead + 1) % BELT_SIZE;
-
-    V(SEM_MUTEX_STATE);
-}
 
 
 void start_chef() {
@@ -67,7 +69,6 @@ void start_chef() {
         int do_slow = 0;
         int do_evacuate = 0;
 
-        advance_belt(state);
         chef_put_dish(state, -1);
 
         P(SEM_MUTEX_STATE);

@@ -67,82 +67,77 @@ int assign_table(RestaurantState* state, bool vipStatus, int groupSize, int grou
     return -1;
 }
 
-void handle_assign_group(RestaurantState* state, pid_t groupPid) {
+void handle_queue_group(const ClientRequest& req) {
+    P(SEM_MUTEX_QUEUE);
+    int freeNormal = semctl(sem_id, SEM_QUEUE_FREE_NORMAL, GETVAL);
+    int freeVip = semctl(sem_id, SEM_QUEUE_FREE_VIP, GETVAL);
+    V(SEM_MUTEX_QUEUE);
+
     char logBuffer[256];
-    time_t* timestamp;
+    if ((!req.vipStatus && freeNormal > 0) ||
+        (req.vipStatus && freeVip > 0)) {
+        bool queued = queue_push(req.pid, req.vipStatus);
 
-    // ===== 1. zapytanie clients o dane grupy (po pid) =====
-    ServiceRequest req{};
-    req.mtype = groupPid;
-    req.type = REQ_GET_GROUP;
-    req.extraData = 0;
+        if (queued) {
+            snprintf(logBuffer, sizeof(logBuffer),
+                "\033[32m[%ld] [SERVICE]: GROUP QUEUED | pid=%d groupID=%d size=%d vip=%d\033[0m",
+                time(NULL), req.pid, req.groupID, req.groupSize, req.vipStatus
+            );
 
-    queue_send_request(req);
+            fifo_log(logBuffer);
+            return;
+        }
+    }
 
-    ClientResponse resp{};
-    queue_recv_response(resp);
+    ServiceRequest reject{};
+    reject.mtype = req.pid;
+    reject.type = REQ_GROUP_REJECT;
 
-    // ===== 2. sprawdzenie miejsca w lokalu =====
+    queue_send_request(reject);
+
+    snprintf(logBuffer, sizeof(logBuffer),
+        "\033[32m[%ld] [SERVICE]: GROUP REJECTED | pid=%d groupID=%d size=%d reason=NO_SPACE_IN_RESTAURANT\033[0m",
+        time(NULL), req.pid, req.groupID, req.groupSize
+    );
+
+    fifo_log(logBuffer);
+}
+
+void handle_assign_group(RestaurantState* state,const ClientRequest& req) {
+    char logBuffer[256];
+
+    // ===== 1. sprawdzenie miejsca w lokalu =====
     P(SEM_MUTEX_STATE);
-    int freeSeatsTotal = TOTAL_SEATS - state->currentGuestCount + SEM_QUEUE_FREE_NORMAL + SEM_QUEUE_FREE_VIP;
+    int freeSeats = TOTAL_SEATS - state->currentGuestCount;
     V(SEM_MUTEX_STATE);
 
-    if (freeSeatsTotal < resp.groupSize) {
-        ServiceRequest reject{};
-        reject.mtype = groupPid;
-        reject.type = REQ_GROUP_REJECT;
-
-        queue_send_request(reject);
-
-        time_t timestamp = time(NULL);
-        snprintf(logBuffer, sizeof(logBuffer),
-            "\033[32m[%ld] [SERVICE] GROUP REJECTED | pid=%d groupID=%d size=%d reason=NO_SPACE_IN_RESTAURANT\033[0m",
-            timestamp, resp.pid, resp.groupID, resp.groupSize
-        );
-        fifo_log(logBuffer);
+    // ===== 2. brak stolika → kolejka albo odrzucenie =====
+    if (freeSeats < req.groupSize) {
+        handle_queue_group(req);
         return;
     }
 
     // ===== 3. próba przydziału stolika =====
-    int assignedTable = assign_table(state, resp.vipStatus, resp.groupSize, resp.groupID, resp.pid);
+    int assignedTable = assign_table(state, req.vipStatus, req.groupSize, req.groupID, req.pid);
 
     if (assignedTable != -1) {
         snprintf(logBuffer, sizeof(logBuffer),
-            "\033[32m[%ld] [TABLE ASSIGNED] table=%d pid=%d groupID=%d size=%d vip=%d\033[0m",
-            time(NULL), assignedTable, resp.pid, resp.groupID, resp.groupSize, resp.vipStatus
+            "\033[32m[%ld] [SERVICE]: TABLE ASSIGNED | table=%d pid=%d groupID=%d size=%d vip=%d\033[0m",
+            time(NULL), assignedTable, req.pid, req.groupID, req.groupSize, req.vipStatus
         );
         fifo_log(logBuffer);
 
-        ServiceRequest req{};
-        req.mtype = resp.pid;
-        req.type = REQ_GROUP_ASSIGNED;
-        req.extraData = assignedTable;
+        ServiceRequest assigned{};
+        assigned.mtype = req.pid;
+        assigned.type = REQ_GROUP_ASSIGNED;
+        assigned.extraData = assignedTable;
 
-        queue_send_request(req);
-        return;
-    }
-    
-
-    // ===== 4. brak stolika → kolejka =====
-    bool queued = queue_push(groupPid, resp.vipStatus);
-
-    if (queued) {
-        time_t timestamp = time(NULL);
-        snprintf(logBuffer, sizeof(logBuffer),
-            "\033[32m[%ld] [SERVICE] GROUP QUEUED | pid=%d groupID=%d size=%d vip=%d\033[0m",
-            timestamp, resp.pid, resp.groupID, resp.groupSize, resp.vipStatus
-        );
-        fifo_log(logBuffer);
+        queue_send_request(assigned);
         return;
     }
 
-    // ===== 5. brak miejsca w kolejce =====
-    ServiceRequest reject{};
-    reject.mtype = groupPid;
-    reject.type = REQ_GROUP_REJECT;
-    reject.extraData = 0;
-
-    queue_send_request(reject);
+    // ===== 4. brak pasującego stolika =====
+    handle_queue_group(req);
 }
 
 void handle_service_group_done(RestaurantState* state, pid_t pid, int* eatenCount)
@@ -210,13 +205,10 @@ void start_service() {
         ClientRequest req{};
         queue_recv_request(req);  // blokuje, dopóki nie przyjdzie komunikat
 
-        char logBuffer[256];
-        time_t timestamp = time(NULL);
-
         // Obsługa komunikatu wg typu
         switch (req.type) {
         case REQ_ASSIGN_GROUP:
-            handle_assign_group(state, req.pid);
+            handle_assign_group(state, req);
             break;
         case REQ_GROUP_DONE:
             handle_service_group_done(state, req.pid, req.eatenCount);

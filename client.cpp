@@ -39,16 +39,15 @@ void handle_group_done(const Group& g) {
 
     // Logujemy intencję zakończenia
     snprintf(logBuffer, sizeof(logBuffer),
-        "\033[38;5;118m[%ld] [CLIENT] REQUEST DONE | groupID=%d, pid=%d\033[0m",
+        "\033[38;5;118m[%ld] [CLIENTS]: REQUEST DONE | groupID=%d, pid=%d\033[0m",
         timestamp, g.getGroupID(), getpid());
     fifo_log(logBuffer);
 }
 
 static void handle_get_group(const Group& g) {
     ClientResponse resp{};
-    time_t timestamp = time(NULL);
 
-    resp.mtype = 1;
+    resp.mtype = getpid();
     resp.pid = getpid();
     resp.groupID = g.getGroupID();
     resp.groupSize = g.getGroupSize();
@@ -65,7 +64,7 @@ static void handle_reject_group(const Group& g) {
     time_t timestamp = time(NULL);
 
     snprintf(logBuffer, sizeof(logBuffer),
-        "\033[38;5;118m[%ld] [GROUP REJECTED] pid=%d groupID=%d size=%d vip=%d dishes=%d\033[0m",
+        "\033[38;5;118m[%ld] [CLIENTS]: GROUP REJECTED pid=%d groupID=%d size=%d vip=%d dishes=%d\033[0m",
         timestamp, getpid(), g.getGroupID(), g.getGroupSize(), g.getVipStatus(), g.getDishesToEat()
     );
 
@@ -79,27 +78,36 @@ void handle_table_assigned(Group& g, int tableIndex) {
 }
 
 void handle_consume_dish(Group& g) {
-    P(SEM_MUTEX_STATE);
+    int tableIndex = g.getTableIndex();
+    int dishID = 0;
+    colors color;
+    int price = 0;
 
-    int tableIndex = g.getTableIndex();   // stolik grupy
-    int idx = (state->beltHead + tableIndex) % BELT_SIZE;
-    Dish& d = state->belt[idx];
+    P(SEM_MUTEX_BELT);
+    Dish& d = state->belt[tableIndex];
 
-    if (d.dishID != -1) { // -1 oznacza brak talerzyka
+    if (d.dishID != 0) {
         P(SEM_BELT_ITEMS);
         g.consumeOneDish(d.color);
-        d.dishID = -1;   // oznaczamy, że talerzyk został zdjęty z taśmy
-        V(SEM_BELT_SLOTS);
 
+        dishID = d.dishID;
+        color = d.color;
+        price = d.price;
+        
+        d.dishID = 0;
+        V(SEM_BELT_SLOTS);
+    }
+
+    V(SEM_MUTEX_BELT);
+
+    if (dishID != 0) {
         char logBuffer[256];
         time_t timestamp = time(NULL);
         snprintf(logBuffer, sizeof(logBuffer),
-            "\033[38;5;118m[%ld] [CLIENT] CONSUMED DISH | groupID=%d, pid=%d, color=%s, price=%d, dishesToEat=%d\033[0m",
-            timestamp, g.getGroupID(), getpid(), colorToString(d.color), d.price, g.getDishesToEat());
+            "\033[38;5;118m[%ld] [CLIENTS]: CONSUMED %d DISH | table=%d, groupID=%d, pid=%d, color=%s, price=%d, dishesToEat=%d\033[0m",
+            timestamp, dishID, g.getTableIndex(), g.getGroupID(), getpid(), colorToString(color), price, g.getDishesToEat());
         fifo_log(logBuffer);
     }
-
-    V(SEM_MUTEX_STATE);
 }
 
 // ===== statyczne pola Group =====
@@ -118,6 +126,10 @@ void group_loop(Group& g) {
     request.type = REQ_ASSIGN_GROUP;         // typ żądania CREATE_GROUP
     request.pid = getpid();            // PID procesu grupy
     request.groupID = g.getGroupID();
+    request.groupSize = g.getGroupSize();
+    request.adultCount = g.getAdultCount();
+    request.childCount = g.getChildCount();
+    request.vipStatus = g.getVipStatus();
     memset(request.eatenCount, 0, sizeof(request.eatenCount));
 
     queue_send_request(request);
@@ -128,36 +140,39 @@ void group_loop(Group& g) {
         timestamp, g.getGroupID(), getpid(), g.getGroupSize(), g.getDishesToEat(), g.getVipStatus());
     fifo_log(logBuffer);
 
-    ServiceRequest req{};
-    queue_recv_request(req);   // odbiera request od service
+    while (true) {
+        ServiceRequest req{};
+        queue_recv_request(req, getpid());
 
-    if(req.type == REQ_GET_GROUP) handle_get_group(g);
-
-    // ===== Główna pętla symulacji grupy =====
-    while (g.getTableIndex() == -1) {
-        if (g.isFinished()) {
-            handle_group_done(g); // wysyła request do service, przekazując eatenCount
-            break;                // koniec pętli – proces grupy kończy działanie
+        if (req.type == REQ_GROUP_ASSIGNED) {
+            handle_table_assigned(g, req.extraData);
+            break;
         }
 
-        // losowa konsumpcja
-        //if (rand() % 100 < 80) { // 50% szansa zjedzenia dania w tym kroku
-            handle_consume_dish(g);
-        //}
+        if (req.type == REQ_GROUP_REJECT) {
+            handle_reject_group(g);
+            _exit(0);
+        }
 
-        // obsługa komunikatów od Service
+        if (req.type == REQ_GET_GROUP) {
+            handle_get_group(g);
+        }
+    }
+
+    while (true) {
+        if (g.isFinished()) {
+            handle_group_done(g);
+            break;
+        }
+
+        handle_consume_dish(g);
+
         ServiceRequest req{};
-        queue_recv_request(req);   // odbiera request od service
+        queue_recv_request(req, getpid());
 
         switch (req.type) {
         case REQ_GET_GROUP:
             handle_get_group(g);
-            break;
-        case REQ_GROUP_REJECT:
-            handle_reject_group(g);
-            break;
-        case REQ_GROUP_ASSIGNED:
-            handle_table_assigned(g, req.extraData);
             break;
         default:
             break;

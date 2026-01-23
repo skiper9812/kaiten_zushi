@@ -22,8 +22,6 @@ void start_manager() {
     P(SEM_MUTEX_STATE);
 
     state->restaurantMode = OPEN;
-    state->beltHead = 0;
-    state->beltTail = 0;
     state->nextDishID = 1;
     
         for (int i = 0; i < TABLE_COUNT; ++i) {
@@ -58,7 +56,7 @@ void start_manager() {
 
 
         char buffer[128];
-        snprintf(buffer, sizeof(buffer),"\033[35m[%ld] [MANAGER] TICK\033[0m",time(NULL));
+        snprintf(buffer, sizeof(buffer),"\033[35m[%ld] [MANAGER]: TICK\033[0m",time(NULL));
         fifo_log(buffer);
 
         P(SEM_MUTEX_STATE);

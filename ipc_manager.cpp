@@ -64,9 +64,9 @@ void queue_send_request(const ServiceRequest& msg) {
     );
 }
 
-void queue_recv_request(ServiceRequest& msg) {
+void queue_recv_request(ServiceRequest& msg, long mtype) {
     CHECK_ERR(
-        msgrcv(service_qid, &msg, sizeof(ServiceRequest) - sizeof(long), 0, 0),
+        msgrcv(service_qid, &msg, sizeof(ServiceRequest) - sizeof(long), mtype, 0),
         ERR_IPC_MSG,
         "msgrcv request faileddd"
     );
@@ -80,9 +80,9 @@ void queue_send_request(const ClientRequest& msg) {
     );
 }
 
-void queue_recv_request(ClientRequest& msg) {
+void queue_recv_request(ClientRequest& msg, long mtype) {
     CHECK_ERR(
-        msgrcv(client_qid, &msg, sizeof(ClientRequest) - sizeof(long), 0, 0),
+        msgrcv(client_qid, &msg, sizeof(ClientRequest) - sizeof(long), mtype, 0),
         ERR_IPC_MSG,
         "msgrcv request failed"
     );
@@ -96,9 +96,9 @@ void queue_send_response(const ClientResponse& msg) {
     );
 }
 
-void queue_recv_response(ClientResponse& msg) {
+void queue_recv_response(ClientResponse& msg, long mtype) {
     CHECK_ERR(
-        msgrcv(client_qid, &msg, sizeof(ClientResponse) - sizeof(long), 0, 0),
+        msgrcv(client_qid, &msg, sizeof(ClientResponse) - sizeof(long), mtype, 0),
         ERR_IPC_MSG,
         "msgrcv response failed"
     );
@@ -277,6 +277,8 @@ int ipc_init() {
     sem_set(SEM_MUTEX_STATE, 1);
     sem_set(SEM_MUTEX_QUEUE, 1);
     sem_set(SEM_MUTEX_LOGS, 1);
+    sem_set(SEM_MUTEX_BELT, 1);
+
     sem_set(SEM_BELT_SLOTS, BELT_SIZE);
     sem_set(SEM_BELT_ITEMS, 0);
     sem_set(SEM_TABLES, TABLE_COUNT);

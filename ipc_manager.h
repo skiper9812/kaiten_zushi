@@ -34,7 +34,12 @@ typedef struct {
     long mtype;
     ClientRequestType type;
     pid_t pid;
+
     int groupID;
+    int groupSize;
+    int adultCount;
+    int childCount;
+    bool vipStatus;
     int eatenCount[COLOR_COUNT];
 } ClientRequest;
 
@@ -105,13 +110,13 @@ int connect_queue(char proj_id);
 void remove_queue(char proj_id);
 
 void queue_send_request(const ClientRequest& msg);
-void queue_recv_request(ClientRequest& msg);
+void queue_recv_request(ClientRequest& msg, long mtype = 0);
 
 void queue_send_response(const ClientResponse& msg);
-void queue_recv_response(ClientResponse& msg);
+void queue_recv_response(ClientResponse& msg, long mtype = 0);
 
 void queue_send_request(const ServiceRequest& msg);
-void queue_recv_request(ServiceRequest& msg);
+void queue_recv_request(ServiceRequest& msg, long mtype = 0);
 
 // -----------------------------------------------------
 // Premium orders

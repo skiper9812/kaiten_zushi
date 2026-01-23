@@ -33,7 +33,7 @@
 #define TOTAL_SEATS (X1 + 2 * X2 + 3 * X3 + 4 * X4)
 #define TABLE_COUNT (X1 + X2 + X3 + X4)
 #define MAX_DISHES_ON_BELT 10
-#define BELT_SIZE 16
+#define BELT_SIZE TABLE_COUNT
 #define MSG_PREMIUM_TYPE 1
 #define MAX_QUEUE 20
 #define COLOR_COUNT 6
@@ -104,8 +104,6 @@ struct RestaurantState {
     int currentVIPCount;
 
     int nextDishID;
-    int beltHead;
-    int beltTail;
 
     Table tables[TABLE_COUNT];
     Dish belt[BELT_SIZE];
@@ -127,6 +125,7 @@ enum {
     SEM_MUTEX_STATE = 0,
     SEM_MUTEX_QUEUE,
     SEM_MUTEX_LOGS,
+    SEM_MUTEX_BELT,
     SEM_BELT_SLOTS,
     SEM_BELT_ITEMS,
     SEM_TABLES,
