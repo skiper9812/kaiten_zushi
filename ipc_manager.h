@@ -1,12 +1,18 @@
 #pragma once
 #include "common.h"
 
+#define CLIENT_QUEUE_SIZE 200
+#define SERVICE_QUEUE_SIZE 150
+#define PREMIUM_QUEUE_SIZE 100
+
 #define CLIENT_REQ_QUEUE 'X'
 #define SERVICE_REQ_QUEUE 'Y'
+#define PREMIUM_REQ_QUEUE 'Z'
 #define MAX_MSG_TEXT 128
 
 extern int client_qid;
 extern int service_qid;
+extern int premium_qid;
 
 // =====================================================
 // IPC – protokó³ clients <-> reszta systemu
@@ -15,7 +21,7 @@ extern int service_qid;
 enum ClientRequestType {
     REQ_ASSIGN_GROUP = 1,
     REQ_CONSUME_DISH,
-    REQ_GROUP_DONE
+    REQ_GROUP_FINISHED
 };
 
 enum ServiceRequestType {
@@ -54,11 +60,11 @@ typedef struct {
     int dishesToEat;
 } ClientResponse;
 
-struct PremiumMsg {
+typedef struct {
     long mtype;
-    int table_id;
-    int dish_price;
-};
+    int groupID;
+    int dish;
+} PremiumRequest;
 
 // -----------------------------------------------------
 // Globalne klucze i identyfikatory IPC
@@ -111,19 +117,14 @@ void remove_queue(char proj_id);
 
 void queue_send_request(const ClientRequest& msg);
 void queue_recv_request(ClientRequest& msg, long mtype = 0);
-
 void queue_send_response(const ClientResponse& msg);
 void queue_recv_response(ClientResponse& msg, long mtype = 0);
 
 void queue_send_request(const ServiceRequest& msg);
 void queue_recv_request(ServiceRequest& msg, long mtype = 0);
 
-// -----------------------------------------------------
-// Premium orders
-// -----------------------------------------------------
-
-void send_premium_order(int table_id, int price);
-int recv_premium_order(PremiumMsg* msg);
+void queue_send_request(const PremiumRequest& msg);
+bool queue_recv_request(PremiumRequest& msg, long mtype = 0);
 
 // -----------------------------------------------------
 // FIFO logger
@@ -135,3 +136,4 @@ void fifo_close_write();
 void fifo_log(const char* msg);
 void logger_loop(const char* filename);
 void fifo_init_close_signal();
+//void terminate_handler(int sig);

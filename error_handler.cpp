@@ -5,7 +5,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+bool fatal_error = 0;
+
 void handle_error(ErrorCode code, const char* msg, int saved_errno) {
+    if (terminate_flag) return;
+    
     fprintf(stderr, "[ERROR %d] %s (%s)\n", code, msg,
         saved_errno ? strerror(saved_errno) : "no errno");
 
@@ -14,13 +18,13 @@ void handle_error(ErrorCode code, const char* msg, int saved_errno) {
         case ERR_SEM_OP:
         case ERR_MEM_ALLOC:
         case ERR_IPC_MSG:
-            exit(EXIT_FAILURE);
+            fatal_error = 1;
         case ERR_FILE_IO:
             break;
         case ERR_INVALID_INPUT:
         case ERR_OVERFLOW:
             break;
         default:
-            exit(EXIT_FAILURE);
+            fatal_error = 1;
     }
 }

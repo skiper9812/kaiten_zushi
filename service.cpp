@@ -1,5 +1,20 @@
 ﻿#include "service.h"
 
+static void clean_zombie_dishes(RestaurantState* state, int groupID) {
+    for (int i = 0; i < BELT_SIZE; ++i) {
+        Dish& d = state->belt[i];
+
+        if (d.dishID == 0)
+            continue;
+
+        if (d.targetGroupID == groupID) {
+            d.dishID = 0;
+            d.targetGroupID = -1;
+            V(SEM_BELT_SLOTS);
+        }
+    }
+}
+
 int assign_table(RestaurantState* state, bool vipStatus, int groupSize, int groupID, pid_t pid)
 {
     for (int i = 0; i < TABLE_COUNT; ++i) {
@@ -140,9 +155,12 @@ void handle_assign_group(RestaurantState* state,const ClientRequest& req) {
     handle_queue_group(req);
 }
 
-void handle_service_group_done(RestaurantState* state, pid_t pid, int* eatenCount)
-{
+void handle_group_finished(RestaurantState* state,const ClientRequest& req) {
+    pid_t pid = req.pid;
+    const int* eatenCount = req.eatenCount;
+
     P(SEM_MUTEX_STATE);
+    P(SEM_MUTEX_BELT);
 
     for (int i = 0; i < TABLE_COUNT; ++i) {
         Table& t = state->tables[i];
@@ -151,12 +169,11 @@ void handle_service_group_done(RestaurantState* state, pid_t pid, int* eatenCoun
             if (t.slots[s].pid != pid)
                 continue;
 
+            int groupID = req.groupID;
             int size = t.slots[s].size;
             bool vip = t.slots[s].vipStatus;
 
-            t.slots[s].pid = -1;
-            t.slots[s].size = 0;
-            t.slots[s].vipStatus = false;
+            clean_zombie_dishes(state, groupID);
 
             for (int i = 0; i < COLOR_COUNT; ++i) {
                 if (eatenCount[i] == 0) continue;
@@ -170,6 +187,10 @@ void handle_service_group_done(RestaurantState* state, pid_t pid, int* eatenCoun
                 state->revenue += state->soldValue[i];
             }
 
+            t.slots[s].pid = -1;
+            t.slots[s].size = 0;
+            t.slots[s].vipStatus = false;
+
             t.occupiedSeats -= size;
             state->currentGuestCount -= size;
             if (vip)
@@ -179,19 +200,20 @@ void handle_service_group_done(RestaurantState* state, pid_t pid, int* eatenCoun
             if (t.occupiedSeats == 0)
                 V(SEM_TABLES);
 
+            V(SEM_MUTEX_BELT);
             V(SEM_MUTEX_STATE);
             return;
         }
     }
 
+    V(SEM_MUTEX_BELT);
     V(SEM_MUTEX_STATE);
 }
 
 
 void start_service() {
-    signal(SIGUSR1, handle_manager_signal);
-    signal(SIGUSR2, handle_manager_signal);
-    signal(SIGTERM, handle_manager_signal);
+    signal(SIGINT, SIG_IGN);
+    //signal(SIGRTMIN, terminate_handler);
 
     fifo_open_write();
 
@@ -200,7 +222,7 @@ void start_service() {
 
     RestaurantState* state = get_state();
 
-    while (true) {
+    while (!terminate_flag) {
         // Blokujące odbieranie komunikatu od grupy
         ClientRequest req{};
         queue_recv_request(req);  // blokuje, dopóki nie przyjdzie komunikat
@@ -210,8 +232,8 @@ void start_service() {
         case REQ_ASSIGN_GROUP:
             handle_assign_group(state, req);
             break;
-        case REQ_GROUP_DONE:
-            handle_service_group_done(state, req.pid, req.eatenCount);
+        case REQ_GROUP_FINISHED:
+            handle_group_finished(state, req);
             break;
         default:
             // nieznany typ, ignorujemy lub logujemy

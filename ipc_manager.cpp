@@ -23,6 +23,7 @@ int msg_id = -1;
 
 int client_qid = -1;
 int service_qid = -1;
+int premium_qid = -1;
 
 RestaurantState* state = nullptr;
 
@@ -57,51 +58,107 @@ void remove_queue(char proj_id) {
 }
 
 void queue_send_request(const ServiceRequest& msg) {
-    CHECK_ERR(
+    P(SEM_SERVICE_FREE);
+    
+    if (!CHECK_ERR(
         msgsnd(service_qid, &msg, sizeof(ServiceRequest) - sizeof(long), 0),
         ERR_IPC_MSG,
-        "msgsnd request failed"
-    );
+        "msgsnd ServiceRequest failed")) {
+
+        V(SEM_SERVICE_ITEMS);
+    }
 }
 
 void queue_recv_request(ServiceRequest& msg, long mtype) {
-    CHECK_ERR(
+    P(SEM_SERVICE_ITEMS);
+
+    if (!CHECK_BLOCKING(
         msgrcv(service_qid, &msg, sizeof(ServiceRequest) - sizeof(long), mtype, 0),
         ERR_IPC_MSG,
-        "msgrcv request faileddd"
-    );
+        "msgrcv ServiceRequest failed")) {
+
+        V(SEM_SERVICE_FREE);
+    }
 }
 
+void queue_send_request(const PremiumRequest& msg) {
+    P(SEM_PREMIUM_FREE); 
+
+    if (!CHECK_ERR(
+        msgsnd(premium_qid, &msg, sizeof(PremiumRequest) - sizeof(long), 0),
+        ERR_IPC_MSG,
+        "msgsnd PremiumRequest failed")) {
+                               
+        V(SEM_PREMIUM_ITEMS);
+    }
+}
+
+bool queue_recv_request(PremiumRequest& msg, long mtype) {
+    P(SEM_PREMIUM_ITEMS);
+
+    ssize_t ret = msgrcv(premium_qid, &msg, sizeof(PremiumRequest) - sizeof(long), mtype, IPC_NOWAIT);
+
+    if (ret == -1) {
+        if (errno == ENOMSG) 
+            V(SEM_PREMIUM_ITEMS);
+        else
+            CHECK_ERR(-1, ERR_IPC_MSG, "msgrcv PremiumRequest failed");
+
+        return false;
+    }
+    else {
+        V(SEM_PREMIUM_FREE);
+        return true;
+    }
+}
+
+
 void queue_send_request(const ClientRequest& msg) {
-    CHECK_ERR(
+    P(SEM_CLIENT_FREE);
+
+    if (!CHECK_ERR(
         msgsnd(client_qid, &msg, sizeof(ClientRequest) - sizeof(long), 0),
         ERR_IPC_MSG,
-        "msgsnd request failed"
-    );
+        "msgsnd ClientRequest failed")) {
+
+        V(SEM_CLIENT_ITEMS);
+    }
 }
 
 void queue_recv_request(ClientRequest& msg, long mtype) {
-    CHECK_ERR(
+    P(SEM_CLIENT_ITEMS);
+
+    if (!CHECK_BLOCKING(
         msgrcv(client_qid, &msg, sizeof(ClientRequest) - sizeof(long), mtype, 0),
         ERR_IPC_MSG,
-        "msgrcv request failed"
-    );
+        "msgrcv ClientRequest failed")) {
+
+        V(SEM_CLIENT_FREE);
+    }
 }
 
 void queue_send_response(const ClientResponse& msg) {
-    CHECK_ERR(
+    P(SEM_CLIENT_FREE);
+
+    if (!CHECK_ERR(
         msgsnd(client_qid, &msg, sizeof(ClientResponse) - sizeof(long), 0),
         ERR_IPC_MSG,
-        "msgsnd response failed"
-    );
+        "msgsnd ClientResponse failed")) {
+
+        V(SEM_CLIENT_ITEMS);
+    }
 }
 
 void queue_recv_response(ClientResponse& msg, long mtype) {
-    CHECK_ERR(
+    P(SEM_CLIENT_ITEMS);
+
+    if (!CHECK_BLOCKING(
         msgrcv(client_qid, &msg, sizeof(ClientResponse) - sizeof(long), mtype, 0),
         ERR_IPC_MSG,
-        "msgrcv response failed"
-    );
+        "msgrcv ClientResponse failed")) {
+
+        V(SEM_CLIENT_FREE);
+    }
 }
 
 /* ---------- FIFO LOGGER ---------- */
@@ -144,6 +201,9 @@ void fifo_log(const char* msg) {
 }
 
 void logger_loop(const char* filename) {
+    //signal(SIGINT, SIG_IGN);
+    //signal(SIGRTMIN+1, terminate_handler);
+
     fifo_fd_read = open(FIFO_PATH, O_RDONLY);
     CHECK_ERR(fifo_fd_read, ERR_IPC_INIT, "fifo open read");
 
@@ -164,20 +224,6 @@ void logger_loop(const char* filename) {
     fifo_fd_read = -1;
 }
 
-/* ---------- SIGNAL HANDLER ---------- */
-
-void handle_manager_signal(int sig) {
-    RestaurantState* s = get_state();
-    if (!s) return;
-
-    switch (sig) {
-    case SIGUSR1: s->sig_accelerate = 1; break;
-    case SIGUSR2: s->sig_slowdown = 1; break;
-    case SIGTERM: s->sig_evacuate = 1; break;
-    default: break;
-    }
-}
-
 /* ---------- SEMAPHORES ---------- */
 
 static void sem_set(int semnum, int val) {
@@ -192,12 +238,12 @@ static void sem_set(int semnum, int val) {
 
 void P(int semnum) {
     struct sembuf op = { (unsigned short)semnum, -1, 0 };
-    CHECK_ERR(semop(sem_id, &op, 1), ERR_SEM_OP, "semop P");
+    CHECK_BLOCKING(semop(sem_id, &op, 1), ERR_SEM_OP, "semop P");
 }
 
 void V(int semnum) {
     struct sembuf op = { (unsigned short)semnum, 1, 0 };
-    CHECK_ERR(semop(sem_id, &op, 1), ERR_SEM_OP, "semop V");
+    CHECK_BLOCKING(semop(sem_id, &op, 1), ERR_SEM_OP, "semop V");
 }
 
 /* ---------- QUEUES (VIP / NORMAL) ---------- */
@@ -232,33 +278,6 @@ bool queue_push(pid_t groupPid, bool vipStatus) {
     return success;
 }
 
-
-/*int queue_pop(int requiredSize, bool vipSuitable) {
-    int groupID = -1;
-
-    P(SEM_MUTEX_QUEUE);
-
-    int* q = vipSuitable ? state->vipQueue.groupID : state->normalQueue.groupID;
-    int* count = vipSuitable ? &state->vipQueue.count : &state->normalQueue.count;
-
-    if (*count > 0) {
-        groupID = q[0];
-        for (int i = 1; i < *count; i++) q[i - 1] = q[i];
-        (*count)--;
-
-        if (vipSuitable) V(SEM_QUEUE_FREE_VIP);
-        else V(SEM_QUEUE_FREE_NORMAL);
-    }
-
-    V(SEM_MUTEX_QUEUE);
-
-    char buffer[512];
-    int len = snprintf(buffer, sizeof(buffer), "QUEUE: pop returning groupID=%d", groupID);
-    fifo_log(buffer);
-
-    return groupID;
-}*/
-
 /* ---------- SHM / SEM / MSG INIT ---------- */
 
 int ipc_init() {
@@ -274,21 +293,39 @@ int ipc_init() {
     sem_id = semget(SEM_KEY, SEM_COUNT, IPC_CREAT | 0600);
     CHECK_ERR(sem_id, ERR_IPC_INIT, "semget");
 
+    //sekcje krytyczne
     sem_set(SEM_MUTEX_STATE, 1);
     sem_set(SEM_MUTEX_QUEUE, 1);
     sem_set(SEM_MUTEX_LOGS, 1);
     sem_set(SEM_MUTEX_BELT, 1);
 
+    //taśma
     sem_set(SEM_BELT_SLOTS, BELT_SIZE);
-    sem_set(SEM_BELT_ITEMS, 0);
+    sem_set(SEM_BELT_ITEMS, 0);  // liczba przedmiotów na taśmie
+
+    // Stoły
     sem_set(SEM_TABLES, TABLE_COUNT);
+
+    // Kolejka do lokalu
     sem_set(SEM_QUEUE_FREE_VIP, MAX_QUEUE);
     sem_set(SEM_QUEUE_FREE_NORMAL, MAX_QUEUE);
     sem_set(SEM_QUEUE_USED_VIP, 0);
     sem_set(SEM_QUEUE_USED_NORMAL, 0);
 
+    // Sterowanie kolejkami komunikatów
+    sem_set(SEM_CLIENT_FREE, CLIENT_QUEUE_SIZE);
+    sem_set(SEM_CLIENT_ITEMS, 0);
+
+    sem_set(SEM_SERVICE_FREE, SERVICE_QUEUE_SIZE);
+    sem_set(SEM_SERVICE_ITEMS, 0);
+
+    sem_set(SEM_PREMIUM_FREE, PREMIUM_QUEUE_SIZE);
+    sem_set(SEM_PREMIUM_ITEMS, 0);
+
+
     client_qid = create_queue(CLIENT_REQ_QUEUE);
     service_qid = create_queue(SERVICE_REQ_QUEUE);
+    premium_qid = create_queue(PREMIUM_REQ_QUEUE);
 
     fifo_init();
     fifo_init_close_signal();
@@ -310,7 +347,13 @@ void ipc_cleanup() {
     if (msg_id != -1) { msgctl(msg_id, IPC_RMID, NULL); msg_id = -1; }
     if (client_qid != -1) msgctl(client_qid, IPC_RMID, nullptr);
     if (service_qid != -1) msgctl(service_qid, IPC_RMID, nullptr);
+    if (premium_qid != -1) msgctl(premium_qid, IPC_RMID, nullptr);
 
     unlink(FIFO_PATH);
     unlink(CLOSE_FIFO);
 }
+
+/*void terminate_handler(int sig) {
+    (void)sig;
+    terminate_flag = 1;
+}*/

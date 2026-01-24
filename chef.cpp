@@ -11,13 +11,13 @@ static int check_close_signal() {
     return 0;
 }
 
-void chef_put_dish(RestaurantState* state, int target) {
-    int idx = rand() % 3 + (target == -1 ? 0 : 3);   // 1–3 basic, 4–6 premium
+void chef_put_dish(RestaurantState* state, int dish, int target) {
+    int idx = dish > 2 ? dish : rand() % 3;
 
     Dish plate;
     plate.color = colorFromIndex(idx);
     plate.price = priceForColor(plate.color);
-    plate.targetTableID = target;
+    plate.targetGroupID = target;
 
     P(SEM_BELT_SLOTS);
     P(SEM_MUTEX_BELT);
@@ -40,69 +40,64 @@ void chef_put_dish(RestaurantState* state, int target) {
 
     V(SEM_MUTEX_BELT);
 
-    /*if (target != -1) {
-        send_premium_order(target, plate.price);
-    }*/
-
     char buffer[128];
     snprintf(buffer, sizeof(buffer),
         "\033[38;5;214m[%ld] [CHEF]: DISH %d COOKED | color=%s price=%d targetTableID=%d\033[0m",
-        time(NULL), plate.dishID, colorToString(plate.color), plate.price, plate.targetTableID);
+        time(NULL), plate.dishID, colorToString(plate.color), plate.price, plate.targetGroupID);
     fifo_log(buffer);
 }
 
+double sleep_time(double base, double speed) {
+    double min = base * speed;
+    double max = base / speed;
 
+    if (min > max) {
+        double temp = min;
+        min = max;
+        max = temp;
+    }
+
+    return min + (rand() / (double)RAND_MAX) * (max - min);
+}
 
 void start_chef() {
-    signal(SIGUSR1, handle_manager_signal);
-    signal(SIGUSR2, handle_manager_signal);
-    signal(SIGTERM, handle_manager_signal);
+    signal(SIGINT, SIG_IGN);
+    //signal(SIGRTMIN+1, terminate_handler);
 
     RestaurantState* state = get_state();
     client_qid = connect_queue(CLIENT_REQ_QUEUE);
     service_qid = connect_queue(SERVICE_REQ_QUEUE);
+    premium_qid = connect_queue(PREMIUM_REQ_QUEUE);
 
     fifo_open_write();
+    double speed;
 
-    while (true) {
+    while (!terminate_flag) {
         int do_accel = 0;
         int do_slow = 0;
         int do_evacuate = 0;
 
-        chef_put_dish(state, -1);
+        PremiumRequest order;
+
+        if (queue_recv_request(order)) {
+            chef_put_dish(state, order.dish, order.groupID);
+        }
+        else {
+            chef_put_dish(state, -1, -1);
+        }
 
         P(SEM_MUTEX_STATE);
-
-        if (state->sig_accelerate) {
-            do_accel = 1;
-            state->sig_accelerate = 0;
-        }
-
-        if (state->sig_slowdown) {
-            do_slow = 1;
-            state->sig_slowdown = 0;
-        }
-
-        if (state->sig_evacuate) {
-            do_evacuate = 1;
-            state->sig_evacuate = 0;
-        }
-
+        speed = state->simulation_speed;
         V(SEM_MUTEX_STATE);
 
-        if (do_accel) {
-            /* przyspieszenie */
-        }
+        double wait = sleep_time(1, speed) * 1000000;
+        char buffer[128];
+        snprintf(buffer, sizeof(buffer),
+            "\033[38;5;214m[%ld] [CHEF]: WAIT %d\033[0m",
+            time(NULL), wait);
+        fifo_log(buffer);
 
-        if (do_slow) {
-            /* spowolnienie */
-        }
-
-        if (do_evacuate) {
-            /* natychmiastowe wyjœcie */
-        }
-
-        sleep(1);
+        //usleep(wait);
     }
 
     fifo_close_write();

@@ -4,7 +4,26 @@
 #include "service.h"
 #include "client.h"
 
+volatile sig_atomic_t terminate_flag = 0;
+
+void sigint_handler(int sig) {
+    (void)sig;
+    terminate_flag = 1;
+    kill(0, SIGRTMIN);
+}
+
+void terminate_handler(int sig) {
+    (void)sig;
+    terminate_flag = 1;
+}
+
 int main() {
+    signal(SIGINT, sigint_handler);
+    signal(SIGRTMIN, terminate_handler);
+
+    signal(SIGUSR1, handle_manager_signal);
+    signal(SIGUSR2, handle_manager_signal);
+    signal(SIGTERM, handle_manager_signal);
     srand(time(0));
 
     // 1. Inicjalizacja IPC

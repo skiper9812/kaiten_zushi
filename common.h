@@ -68,7 +68,7 @@ static int colorToIndex(colors c) {
     return -1;
 }
 
-typedef enum { OPEN = 1, SLOW_MODE = 2, FAST_MODE = 3, EVACUATION = 4 } restaurantMode;
+typedef enum { OPEN = 1, SLOW_MODE = 2, FAST_MODE = 3, CLOSED = 4 } restaurantMode;
 
 struct GroupQueue {
     int groupPid[MAX_QUEUE];
@@ -92,13 +92,14 @@ struct Dish {
     int dishID;
     colors color;
     int price;
-    int targetTableID;
+    int targetGroupID;
 };
 
 class Group;
 
 struct RestaurantState {
     int restaurantMode;
+    double simulation_speed = 1;
 
     int currentGuestCount;
     int currentVIPCount;
@@ -122,16 +123,34 @@ struct RestaurantState {
 };
 
 enum {
+    // Mutexy ogólne
     SEM_MUTEX_STATE = 0,
-    SEM_MUTEX_QUEUE,
     SEM_MUTEX_LOGS,
+
+    // Pas transmisyjny (belt)
     SEM_MUTEX_BELT,
     SEM_BELT_SLOTS,
     SEM_BELT_ITEMS,
+
+    // Sto³y i klienci
     SEM_TABLES,
+    SEM_CLIENT_FREE,
+    SEM_CLIENT_ITEMS,
+
+    // Us³ugi
+    SEM_SERVICE_FREE,
+    SEM_SERVICE_ITEMS,
+
+    // Premium
+    SEM_PREMIUM_FREE,
+    SEM_PREMIUM_ITEMS,
+
+    // Kolejka do lokalu
+    SEM_MUTEX_QUEUE,
     SEM_QUEUE_FREE_VIP,
     SEM_QUEUE_FREE_NORMAL,
     SEM_QUEUE_USED_VIP,
     SEM_QUEUE_USED_NORMAL,
+
     SEM_COUNT
 };

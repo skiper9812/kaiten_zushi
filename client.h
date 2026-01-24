@@ -1,6 +1,7 @@
 #pragma once
 #include "ipc_manager.h"
 #include "common.h"
+#include <pthread.h>
 
 // =====================================================
 // Group – czysty obiekt danych
@@ -15,7 +16,9 @@ private:
     bool vipStatus;
     int dishesToEat;
     int tableIndex;
+    int ordersLeft;
     int eatenCount[COLOR_COUNT];
+    pthread_mutex_t mutex;
 
 public:
     static int nextGroupID;
@@ -36,7 +39,13 @@ public:
         }
 
         dishesToEat = rand() % 8 + 3;
+        ordersLeft = rand() % dishesToEat;
         memset(eatenCount, 0, sizeof(eatenCount));
+        pthread_mutex_init(&mutex, nullptr);
+    }
+
+    ~Group() {
+        pthread_mutex_destroy(&mutex);
     }
 
     // ===== gettery =====
@@ -47,23 +56,52 @@ public:
     bool getVipStatus() const { return vipStatus; }
     int  getDishesToEat() const { return dishesToEat; }
     int  getTableIndex() const { return tableIndex; }
+    int  getOrdersLeft() { pthread_mutex_lock(&mutex); int o = ordersLeft; pthread_mutex_unlock(&mutex); return o; }
     const int* getEatenCount() const { return eatenCount; }
 
     // ===== settery =====
     void setTableIndex(int idx) { tableIndex = idx; }
 
     // ===== mutatory logiczne =====
-    void consumeOneDish(colors c) {
-        int colorIndex = colorToIndex(c);
-        if (dishesToEat <= 0) return;
-        dishesToEat--;
-        if (colorIndex >= 0 && colorIndex < COLOR_COUNT)
-            eatenCount[colorIndex]++;
+    bool orderPremiumDish() {
+        bool orderPremium = (rand() % 100) < 20;
+        pthread_mutex_lock(&mutex);
+        if (orderPremium && ordersLeft > 0) {
+            ordersLeft--;
+            pthread_mutex_unlock(&mutex);
+            return true;
+        }
+        pthread_mutex_unlock(&mutex);
+        return false;
     }
 
-    bool isFinished() const {
-        return dishesToEat <= 0;
+    bool consumeOneDish(colors c) {
+        pthread_mutex_lock(&mutex);
+        if (dishesToEat <= 0) {
+            pthread_mutex_unlock(&mutex);
+            return false;
+        }
+
+        dishesToEat--;
+        int idx = colorToIndex(c);
+        if (idx >= 0 && idx < COLOR_COUNT)
+            eatenCount[idx]++;
+
+        pthread_mutex_unlock(&mutex);
+        return true;
     }
+
+    bool isFinished() {
+        pthread_mutex_lock(&mutex);
+        bool done = (dishesToEat <= 0);
+        pthread_mutex_unlock(&mutex);
+        return done;
+    }
+};
+
+struct PersonCtx {
+    Group* group;
+    int personID;
 };
 
 // =====================================================
