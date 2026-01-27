@@ -212,9 +212,6 @@ void handle_group_finished(RestaurantState* state,const ClientRequest& req) {
 
 
 void start_service() {
-    signal(SIGINT, SIG_IGN);
-    //signal(SIGRTMIN, terminate_handler);
-
     fifo_open_write();
 
     client_qid = connect_queue(CLIENT_REQ_QUEUE);
@@ -222,7 +219,7 @@ void start_service() {
 
     RestaurantState* state = get_state();
 
-    while (!terminate_flag) {
+    while (!terminate_flag && !evacuate_flag) {
         // Blokujące odbieranie komunikatu od grupy
         ClientRequest req{};
         queue_recv_request(req);  // blokuje, dopóki nie przyjdzie komunikat

@@ -57,108 +57,147 @@ void remove_queue(char proj_id) {
     CHECK_ERR(msgctl(proj_id, IPC_RMID, nullptr), ERR_IPC_MSG, "msgctl remove failed");
 }
 
-void queue_send_request(const ServiceRequest& msg) {
-    P(SEM_SERVICE_FREE);
-    
-    if (!CHECK_ERR(
-        msgsnd(service_qid, &msg, sizeof(ServiceRequest) - sizeof(long), 0),
-        ERR_IPC_MSG,
-        "msgsnd ServiceRequest failed")) {
+template<typename T>
+struct QueueRecvTraits {
+    static constexpr int flags = 0;
+};
 
-        V(SEM_SERVICE_ITEMS);
+template<>
+struct QueueRecvTraits<PremiumRequest> {
+    static constexpr int flags = IPC_NOWAIT;
+};
+
+template<typename T>
+void queue_send(int qid, int sem_free, int sem_items,
+    const T& msg, ErrorCode err, const char* err_msg)
+{
+    P(sem_free);
+
+    ErrorDecision d = CHECK_ERR(
+        msgsnd(qid, &msg, sizeof(T) - sizeof(long), 0),
+        err,
+        err_msg
+    );
+
+    if (d == ERR_DECISION_IGNORE) {
+        return;
     }
+
+    if (d == ERR_DECISION_FATAL)
+        exit(EXIT_FAILURE);
 }
 
-void queue_recv_request(ServiceRequest& msg, long mtype) {
-    P(SEM_SERVICE_ITEMS);
+template<typename T>
+bool queue_recv(int qid, int sem_items, int sem_free,
+    T& msg, long mtype,
+    ErrorCode err, const char* err_msg)
+{
 
-    if (!CHECK_BLOCKING(
-        msgrcv(service_qid, &msg, sizeof(ServiceRequest) - sizeof(long), mtype, 0),
-        ERR_IPC_MSG,
-        "msgrcv ServiceRequest failed")) {
+    constexpr int flags = QueueRecvTraits<T>::flags;
 
-        V(SEM_SERVICE_FREE);
-    }
-}
+    for (;;) {
+        ssize_t ret = msgrcv(qid, &msg, sizeof(T) - sizeof(long), mtype, flags);
 
-void queue_send_request(const PremiumRequest& msg) {
-    P(SEM_PREMIUM_FREE); 
+        if (ret >= 0) {
+            V(sem_free);
+            return true;
+        }
 
-    if (!CHECK_ERR(
-        msgsnd(premium_qid, &msg, sizeof(PremiumRequest) - sizeof(long), 0),
-        ERR_IPC_MSG,
-        "msgsnd PremiumRequest failed")) {
-                               
-        V(SEM_PREMIUM_ITEMS);
-    }
-}
+        if (errno == EINTR) {
+            if (terminate_flag && !evacuate_flag)
+                return false;
+            continue;
+        }
 
-bool queue_recv_request(PremiumRequest& msg, long mtype) {
-    P(SEM_PREMIUM_ITEMS);
+        if constexpr (flags & IPC_NOWAIT) {
+            if (errno == ENOMSG) {
+                return false;
+            }
+        }
 
-    ssize_t ret = msgrcv(premium_qid, &msg, sizeof(PremiumRequest) - sizeof(long), mtype, IPC_NOWAIT);
+        ErrorDecision d = handle_error(err, err_msg, errno);
 
-    if (ret == -1) {
-        if (errno == ENOMSG) 
-            V(SEM_PREMIUM_ITEMS);
-        else
-            CHECK_ERR(-1, ERR_IPC_MSG, "msgrcv PremiumRequest failed");
+        if (d == ERR_DECISION_RETRY)
+            continue;
 
         return false;
     }
-    else {
-        V(SEM_PREMIUM_FREE);
-        return true;
-    }
 }
 
+void queue_send_request(const ServiceRequest& msg) {
+    queue_send(service_qid,
+        SEM_SERVICE_FREE,
+        SEM_SERVICE_ITEMS,
+        msg,
+        ERR_IPC_MSG,
+        "msgsnd ServiceRequest failed");
+}
+
+void queue_recv_request(ServiceRequest& msg, long mtype) {
+    queue_recv(service_qid,
+        SEM_SERVICE_ITEMS,
+        SEM_SERVICE_FREE,
+        msg,
+        mtype,
+        ERR_IPC_MSG,
+        "msgrcv ServiceRequest failed");
+}
+
+void queue_send_request(const PremiumRequest& msg) {
+    queue_send(premium_qid,
+        SEM_PREMIUM_FREE,
+        SEM_PREMIUM_ITEMS,
+        msg,
+        ERR_IPC_MSG,
+        "msgsnd PremiumRequest failed");
+}
+
+bool queue_recv_request(PremiumRequest& msg, long mtype) {
+    return queue_recv(premium_qid,
+        SEM_PREMIUM_ITEMS,
+        SEM_PREMIUM_FREE,
+        msg,
+        mtype,
+        ERR_IPC_MSG,
+        "msgrcv PremiumRequest failed");
+}
 
 void queue_send_request(const ClientRequest& msg) {
-    P(SEM_CLIENT_FREE);
-
-    if (!CHECK_ERR(
-        msgsnd(client_qid, &msg, sizeof(ClientRequest) - sizeof(long), 0),
+    queue_send(client_qid,
+        SEM_CLIENT_FREE,
+        SEM_CLIENT_ITEMS,
+        msg,
         ERR_IPC_MSG,
-        "msgsnd ClientRequest failed")) {
-
-        V(SEM_CLIENT_ITEMS);
-    }
+        "msgsnd ClientRequest failed");
 }
 
 void queue_recv_request(ClientRequest& msg, long mtype) {
-    P(SEM_CLIENT_ITEMS);
-
-    if (!CHECK_BLOCKING(
-        msgrcv(client_qid, &msg, sizeof(ClientRequest) - sizeof(long), mtype, 0),
+    queue_recv(client_qid,
+        SEM_CLIENT_ITEMS,
+        SEM_CLIENT_FREE,
+        msg,
+        mtype,
         ERR_IPC_MSG,
-        "msgrcv ClientRequest failed")) {
-
-        V(SEM_CLIENT_FREE);
-    }
+        "msgrcv ClientRequest failed");
 }
 
 void queue_send_response(const ClientResponse& msg) {
-    P(SEM_CLIENT_FREE);
-
-    if (!CHECK_ERR(
-        msgsnd(client_qid, &msg, sizeof(ClientResponse) - sizeof(long), 0),
+    queue_send(client_qid,
+        SEM_CLIENT_FREE,
+        SEM_CLIENT_ITEMS,
+        msg,
         ERR_IPC_MSG,
-        "msgsnd ClientResponse failed")) {
-
-        V(SEM_CLIENT_ITEMS);
-    }
+        "msgsnd ClientResponse failed");
 }
 
 void queue_recv_response(ClientResponse& msg, long mtype) {
-    P(SEM_CLIENT_ITEMS);
-
-    if (!CHECK_BLOCKING(
-        msgrcv(client_qid, &msg, sizeof(ClientResponse) - sizeof(long), mtype, 0),
+    queue_recv(client_qid,
+        SEM_CLIENT_ITEMS,
+        SEM_CLIENT_FREE,
+        msg,
+        mtype,
         ERR_IPC_MSG,
-        "msgrcv ClientResponse failed")) {
-
-        V(SEM_CLIENT_FREE);
-    }
+        "msgrcv ClientResponse failed");
 }
 
 /* ---------- FIFO LOGGER ---------- */
@@ -190,20 +229,18 @@ void fifo_close_write() {
 }
 
 void fifo_log(const char* msg) {
-    P(SEM_MUTEX_LOGS);
+    if (terminate_flag && !evacuate_flag)
+        return;
+
     CHECK_ERR(fifo_fd_write, ERR_IPC_INIT, "fifo open write");
     char buffer[512];
     int len = snprintf(buffer, sizeof(buffer), "%s\n", msg);
     if (write(fifo_fd_write, buffer, len) == -1) {
         fprintf(stderr, "FIFO write error: %s\n", strerror(errno));
     }
-    V(SEM_MUTEX_LOGS);
 }
 
 void logger_loop(const char* filename) {
-    //signal(SIGINT, SIG_IGN);
-    //signal(SIGRTMIN+1, terminate_handler);
-
     fifo_fd_read = open(FIFO_PATH, O_RDONLY);
     CHECK_ERR(fifo_fd_read, ERR_IPC_INIT, "fifo open read");
 
@@ -214,6 +251,7 @@ void logger_loop(const char* filename) {
     ssize_t n;
 
     while ((n = read(fifo_fd_read, buffer, sizeof(buffer) - 1)) > 0) {
+        if (n == 1 && buffer[0] == -1) break;
         buffer[n] = '\0';
         fprintf(file, "%s", buffer);
         fflush(file);
@@ -222,6 +260,7 @@ void logger_loop(const char* filename) {
     fclose(file);
     close(fifo_fd_read);
     fifo_fd_read = -1;
+    _exit(0);
 }
 
 /* ---------- SEMAPHORES ---------- */
@@ -238,12 +277,39 @@ static void sem_set(int semnum, int val) {
 
 void P(int semnum) {
     struct sembuf op = { (unsigned short)semnum, -1, 0 };
-    CHECK_BLOCKING(semop(sem_id, &op, 1), ERR_SEM_OP, "semop P");
+
+    for (;;) {
+        ErrorDecision d = CHECK_ERR(semop(sem_id, &op, 1),
+            ERR_SEM_OP, "semop P");
+
+        if (d == ERR_DECISION_IGNORE)
+            return;
+
+        if (d == ERR_DECISION_RETRY)
+            continue;
+
+        if (d == ERR_DECISION_FATAL)
+            exit(EXIT_FAILURE);
+    }
 }
+
 
 void V(int semnum) {
     struct sembuf op = { (unsigned short)semnum, 1, 0 };
-    CHECK_BLOCKING(semop(sem_id, &op, 1), ERR_SEM_OP, "semop V");
+
+    for (;;) {
+        ErrorDecision d = CHECK_ERR(semop(sem_id, &op, 1),
+            ERR_SEM_OP, "semop V");
+
+        if (d == ERR_DECISION_IGNORE)
+            return;
+
+        if (d == ERR_DECISION_RETRY)
+            continue;
+
+        if (d == ERR_DECISION_FATAL)
+            exit(EXIT_FAILURE);
+    }
 }
 
 /* ---------- QUEUES (VIP / NORMAL) ---------- */
@@ -352,8 +418,3 @@ void ipc_cleanup() {
     unlink(FIFO_PATH);
     unlink(CLOSE_FIFO);
 }
-
-/*void terminate_handler(int sig) {
-    (void)sig;
-    terminate_flag = 1;
-}*/

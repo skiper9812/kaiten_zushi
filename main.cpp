@@ -5,25 +5,41 @@
 #include "client.h"
 
 volatile sig_atomic_t terminate_flag = 0;
+volatile sig_atomic_t evacuate_flag = 0;
 
 void sigint_handler(int sig) {
-    (void)sig;
     terminate_flag = 1;
     kill(0, SIGRTMIN);
 }
 
 void terminate_handler(int sig) {
-    (void)sig;
     terminate_flag = 1;
 }
 
-int main() {
-    signal(SIGINT, sigint_handler);
-    signal(SIGRTMIN, terminate_handler);
+void evacuation_handler(int sig) {
+    evacuate_flag = 1;
+}
 
-    signal(SIGUSR1, handle_manager_signal);
-    signal(SIGUSR2, handle_manager_signal);
-    signal(SIGTERM, handle_manager_signal);
+int main() {
+    struct sigaction sa = { 0 };
+
+    //SIGINT
+    sa.sa_handler = sigint_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGINT, &sa, NULL);
+
+    //SIGRTMIN
+    sa.sa_handler = terminate_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGRTMIN, &sa, NULL);
+
+    //SIGTERM
+    sa.sa_handler = evacuation_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGTERM, &sa, NULL);
     srand(time(0));
 
     // 1. Inicjalizacja IPC
@@ -75,11 +91,13 @@ int main() {
     // lub sleep() w main() ¿eby procesy mog³y dzia³aæ
 
     // 7. Czekanie na zakoñczenie procesów
-    waitpid(logger_pid, NULL, 0);
-    waitpid(manager_pid, NULL, 0);
-    waitpid(chef_pid, NULL, 0);
-    waitpid(service_pid, NULL, 0);
-    waitpid(client_pid, NULL, 0);
+    for (;;) {
+        pid_t pid = wait(NULL); // dowolny potomek
+        if (pid == -1) {
+            if (errno == EINTR) continue;
+            if (errno == ECHILD) break; // nie ma dzieci
+        }
+    }
 
     // 4. Sprz¹tanie IPC
     ipc_cleanup();

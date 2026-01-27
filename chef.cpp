@@ -47,30 +47,34 @@ void chef_put_dish(RestaurantState* state, int dish, int target) {
     fifo_log(buffer);
 }
 
-double sleep_time(double base, double speed) {
-    double min = base * speed;
-    double max = base / speed;
-
-    if (min > max) {
-        double temp = min;
-        min = max;
-        max = temp;
+static inline int speed_multiplier(int speed) {
+    switch (speed) {
+    case SPEED_FAST:   return 1;
+    case SPEED_NORMAL: return 2;
+    case SPEED_SLOW:   return 4;
+    default:           return 2;
     }
+}
 
-    return min + (rand() / (double)RAND_MAX) * (max - min);
+long sleep_time(int base_us, int speed) {
+    int mul = speed_multiplier(speed);
+
+    int min_us = 1000000 * mul / 2;
+    int max_us = 2000000 * mul / 2;
+
+    return base_us +
+        min_us +
+        (rand() % (max_us - min_us + 1));
 }
 
 void start_chef() {
-    signal(SIGINT, SIG_IGN);
-    //signal(SIGRTMIN+1, terminate_handler);
-
     RestaurantState* state = get_state();
     client_qid = connect_queue(CLIENT_REQ_QUEUE);
     service_qid = connect_queue(SERVICE_REQ_QUEUE);
     premium_qid = connect_queue(PREMIUM_REQ_QUEUE);
 
     fifo_open_write();
-    double speed;
+    int speed = 1;
 
     while (!terminate_flag) {
         int do_accel = 0;
@@ -87,17 +91,17 @@ void start_chef() {
         }
 
         P(SEM_MUTEX_STATE);
-        speed = state->simulation_speed;
+        speed = state->simulationSpeed;
         V(SEM_MUTEX_STATE);
 
-        double wait = sleep_time(1, speed) * 1000000;
+        long wait = sleep_time(250000, speed);
         char buffer[128];
         snprintf(buffer, sizeof(buffer),
-            "\033[38;5;214m[%ld] [CHEF]: WAIT %d\033[0m",
+            "\033[38;5;214m[%ld] [CHEF]: WAIT %ld\033[0m",
             time(NULL), wait);
         fifo_log(buffer);
 
-        //usleep(wait);
+        usleep(wait);
     }
 
     fifo_close_write();

@@ -95,11 +95,17 @@ struct Dish {
     int targetGroupID;
 };
 
+typedef enum {
+    SPEED_SLOW = 0,
+    SPEED_NORMAL = 1,
+    SPEED_FAST = 2
+} SimulationSpeed;
+
 class Group;
 
 struct RestaurantState {
     int restaurantMode;
-    double simulation_speed = 1;
+    int simulationSpeed;
 
     int currentGuestCount;
     int currentVIPCount;

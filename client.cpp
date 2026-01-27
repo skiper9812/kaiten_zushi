@@ -10,6 +10,14 @@ int Group::nextGroupID = 0;
 
 // ===== Handlery =====
 
+static void reap_children() {
+    for (;;) {
+        pid_t pid = waitpid(-1, NULL, WNOHANG);
+        if (pid <= 0)
+            break;
+    }
+}
+
 static void handle_create_group() {
     Group g;
     pid_t pid = fork();
@@ -120,7 +128,7 @@ void* person_thread(void* arg) {
     colors color;
     int price;
 
-    while (!g.isFinished() && !terminate_flag) {
+    while (!g.isFinished() && !terminate_flag && !evacuate_flag) {
         dishID = 0;
 
         if (g.orderPremiumDish()) {
@@ -169,7 +177,7 @@ void group_loop(Group& g) {
     fifo_log(buf);
 
     // ===== oczekiwanie na stolik =====
-    while (!terminate_flag) {
+    while (!terminate_flag && !evacuate_flag) {
         ServiceRequest resp{};
         queue_recv_request(resp, getpid());
 
@@ -178,7 +186,7 @@ void group_loop(Group& g) {
             break;
         }
 
-        if (resp.type == REQ_GROUP_REJECT)
+        if (resp.type == REQ_GROUP_REJECT || evacuate_flag)
             handle_reject_group(g);
     }
 
@@ -204,19 +212,26 @@ void group_loop(Group& g) {
 // =====================================================
 
 void start_clients() {
-    signal(SIGINT, SIG_IGN);
-    signal(SIGCHLD, SIG_IGN);
-    //signal(SIGRTMIN+1, terminate_handler);
     fifo_open_write();
     RestaurantState* state = get_state();
 
-    while (!terminate_flag) {
+    while (!terminate_flag && !evacuate_flag) {
         // losowy odstęp czasowy między przyjściem grup
         sleep(rand() % 3);
+
+        reap_children();
 
         handle_create_group();
 
         // Opcjonalnie log lub inne czynności w przerwie między generowaniem
+    }
+
+    for (;;) {
+        pid_t pid = wait(NULL); // dowolny potomek
+        if (pid == -1) {
+            if (errno == EINTR) continue;
+            if (errno == ECHILD) break; // nie ma dzieci
+        }
     }
 
     fifo_close_write();

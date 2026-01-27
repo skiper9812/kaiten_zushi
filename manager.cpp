@@ -1,20 +1,13 @@
 #include "manager.h"
 
-volatile sig_atomic_t restaurantModeFlag = 0;
+volatile sig_atomic_t manager_cmd = 0;
 
 void handle_manager_signal(int sig) {
-    switch (sig) { // 1 - faster, 2 - slower, 3 - evacuate
-    case SIGUSR1:
-        restaurantModeFlag = 1;
-        break;
-    case SIGUSR2:
-        restaurantModeFlag = 2;
-        break;
-    default:
-        restaurantModeFlag = 3;
-        break;
-    }
+    if (sig == SIGUSR1) manager_cmd = 1;      // faster
+    else if (sig == SIGUSR2) manager_cmd = 2; // slower
+    else if (sig == SIGTERM) manager_cmd = 3; // evacuate
 }
+
 
 void send_close_signal() {
     int fd = open(CLOSE_FIFO, O_WRONLY | O_NONBLOCK);
@@ -25,8 +18,13 @@ void send_close_signal() {
 }
 
 void start_manager() {
-    signal(SIGINT, SIG_IGN);
-    //signal(SIGRTMIN+1, terminate_handler);
+    struct sigaction sa = { 0 };
+    sa.sa_handler = handle_manager_signal;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGUSR1, &sa, NULL);
+    sigaction(SIGUSR2, &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
 
     RestaurantState* state = get_state();
     fifo_open_write();
@@ -35,6 +33,7 @@ void start_manager() {
     P(SEM_MUTEX_STATE);
 
     state->restaurantMode = OPEN;
+    state->simulationSpeed = SPEED_NORMAL;
     state->nextDishID = 1;
 
     for (int i = 0; i < TABLE_COUNT; ++i) {
@@ -59,33 +58,45 @@ void start_manager() {
         }
     }
 
-
     V(SEM_MUTEX_STATE);
 
-    while (!terminate_flag) {
-        char buffer[128];
-        snprintf(buffer, sizeof(buffer), "\033[35m[%ld] [MANAGER]: TICK\033[0m", time(NULL));
-        fifo_log(buffer);
 
-        P(SEM_MUTEX_STATE);
+    int speed = 1;
+    while (!terminate_flag && !evacuate_flag) {
+        if (manager_cmd != 0) {
+            P(SEM_MUTEX_STATE);
 
-        if (restaurantModeFlag) {
-            int speed = state->simulation_speed;
+            switch (manager_cmd) {
+            case 1: // faster
+                if (state->simulationSpeed < SPEED_FAST)
+                    state->simulationSpeed++;
+                break;
 
-            if ((speed == 0.5 || speed == 1) && restaurantModeFlag == 1) {
-                state->simulation_speed *= 2;
-            }
-            else if ((speed == 1 || speed == 2) && restaurantModeFlag == 2) {
-                state->simulation_speed *= 0.5;
-            }
-            else if (restaurantModeFlag == 4) {
+            case 2: // slower
+                if (state->simulationSpeed > SPEED_SLOW)
+                    state->simulationSpeed--;
+                break;
+
+            case 3: // evacuate
+                P(SEM_MUTEX_STATE);
                 state->restaurantMode = CLOSED;
+                evacuate_flag = 1; // jeœli jest globalna w procesie managera
+                V(SEM_MUTEX_STATE);
+
+                // opcjonalnie: rozsy³asz sygna³ do wszystkich klientów
+                kill(0, SIGTERM); // lub dedykowany sygna³
+                break;
             }
 
-            restaurantModeFlag = 0;
+            manager_cmd = 0;
+            speed = state->simulationSpeed;
+            V(SEM_MUTEX_STATE);
         }
 
-        V(SEM_MUTEX_STATE);
+
+        char buffer[128];
+        snprintf(buffer, sizeof(buffer), "\033[35m[%ld] [MANAGER %d]: Current simulation speed: %d\033[0m", time(NULL), getpid(), speed);
+        fifo_log(buffer);
 
         sleep(1);
     }
