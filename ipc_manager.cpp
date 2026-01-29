@@ -71,19 +71,42 @@ void queueSend(int qid, int semFree, int semItems,
     const T& msg, ErrorCode err, const char* errMsg)
 {
     P(semFree);
-
-    ErrorDecision d = CHECK_ERR(
-        msgsnd(qid, &msg, sizeof(T) - sizeof(long), 0),
-        err,
-        errMsg
-    );
-
-    if (d == ERR_DECISION_IGNORE) {
+    
+    // Check flags after P() returns (might have returned due to flags)
+    if (terminate_flag || evacuate_flag) {
+        V(semFree);  // Release what we took
         return;
     }
 
-    if (d == ERR_DECISION_FATAL)
-        exit(EXIT_FAILURE);
+    // Use IPC_NOWAIT and retry loop to allow checking termination flags
+    for (;;) {
+        if (terminate_flag || evacuate_flag) {
+            V(semFree);
+            return;
+        }
+        
+        int ret = msgsnd(qid, &msg, sizeof(T) - sizeof(long), IPC_NOWAIT);
+        if (ret == 0) {
+            return;  // Success
+        }
+        
+        int savedErrno = errno;
+        if (savedErrno == EAGAIN) {
+            SIM_SLEEP(10000);  // Queue full, wait 10ms and retry
+            continue;
+        }
+        if (savedErrno == EINTR) {
+            continue;  // Interrupted, check flags and retry
+        }
+        
+        // Real error
+        if (terminate_flag || evacuate_flag) {
+            V(semFree);
+            return;
+        }
+        handleError(err, errMsg, savedErrno);
+        return;
+    }
 }
 
 template<typename T>
@@ -91,29 +114,37 @@ bool queueRecv(int qid, int semItems, int semFree,
     T& msg, long mtype,
     ErrorCode err, const char* errMsg)
 {
-    constexpr int flags = QueueRecvTraits<T>::flags;
+    constexpr int baseFlags = QueueRecvTraits<T>::flags;
 
     for (;;) {
-        ssize_t ret = msgrcv(qid, &msg, sizeof(T) - sizeof(long), mtype, flags);
+        if (terminate_flag || evacuate_flag)
+            return false;
+        
+        // Always use IPC_NOWAIT to avoid indefinite blocking
+        ssize_t ret = msgrcv(qid, &msg, sizeof(T) - sizeof(long), mtype, baseFlags | IPC_NOWAIT);
 
         if (ret >= 0) {
             V(semFree);
             return true;
         }
 
-        if (errno == EINTR) {
-            if (terminate_flag || evacuate_flag)
+        int savedErrno = errno;
+        
+        if (savedErrno == EINTR) {
+            continue;  // Retry after signal
+        }
+        
+        if (savedErrno == ENOMSG || savedErrno == EAGAIN) {
+            // No message available - if this was originally non-blocking, return false
+            if constexpr (baseFlags & IPC_NOWAIT) {
                 return false;
+            }
+            // Otherwise poll with sleep
+            SIM_SLEEP(10000);  // 10ms
             continue;
         }
 
-        if constexpr (flags & IPC_NOWAIT) {
-            if (errno == ENOMSG) {
-                return false;
-            }
-        }
-
-        ErrorDecision d = handleError(err, errMsg, errno);
+        ErrorDecision d = handleError(err, errMsg, savedErrno);
 
         if (d == ERR_DECISION_RETRY)
             continue;

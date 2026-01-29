@@ -17,13 +17,24 @@ static void terminateHandler(int sig) {
 int Group::nextGroupID = 0;
 
 static void* reaperThread(void* arg) {
-    while (!terminate_flag && !evacuate_flag) {
+    while (true) {
         int status;
-        pid_t pid = wait(&status);
+        // Use WNOHANG after flags set to check for remaining children without blocking forever
+        int options = (terminate_flag || evacuate_flag) ? WNOHANG : 0;
+        pid_t pid = waitpid(-1, &status, options);
+        
         if (pid == -1) {
-            if (errno == ECHILD) break;
-            if (errno == EINTR) continue;
+            if (errno == ECHILD) break;  // No more children - done
+            if (errno == EINTR) continue;  // Interrupted, retry
+            break;  // Other error
         }
+        
+        if (pid == 0) {
+            // WNOHANG returned with no children exited yet
+            SIM_SLEEP(10000);  // Wait 10ms and check again
+            continue;
+        }
+        // Child reaped, continue checking for more
     }
     return nullptr;
 }
@@ -133,8 +144,15 @@ void handleConsumeDish(Group& g) {
 
     P(SEM_MUTEX_BELT);
 
-    // Search entire belt for a suitable dish (any generic or targeted to this group)
-    for (int i = 0; i < BELT_SIZE; ++i) {
+    // Calculate belt range for this table (circular belt - uses modulo)
+    int tableIndex = g.getTableIndex();
+    int slotsPerTable = BELT_SIZE / TABLE_COUNT;  // Floor division - some slots may be unassigned
+    if (slotsPerTable < 1) slotsPerTable = 1;     // Minimum 1 slot per table
+    int startSlot = (tableIndex * slotsPerTable) % BELT_SIZE;  // Wrap around
+
+    // Search within this table's belt range (handles wrap-around)
+    for (int j = 0; j < slotsPerTable; ++j) {
+        int i = (startSlot + j) % BELT_SIZE;
         Dish& d = state->belt[i];
         if (d.dishID != 0 && (d.targetGroupID == -1 || d.targetGroupID == groupID)) {
             g.consumeOneDish(d.color);

@@ -32,23 +32,23 @@
 // Simulation duration in seconds (maps to TP->TK restaurant hours)
 #define SIMULATION_DURATION_SECONDS 60
 
-#define FIFO_PATH "/tmp/restauracja_fifo"
-#define CLOSE_FIFO "/tmp/close_restaurant_fifo"
-
 // Opening and closing hours (for display/logging purposes)
 #define TP 12
 #define TK 20
 
+#define FIFO_PATH "/tmp/restauracja_fifo"
+#define CLOSE_FIFO "/tmp/close_restaurant_fifo"
+
 // Table counts by size
-#define X1 4
-#define X2 4
-#define X3 4
-#define X4 4
+#define X1 10
+#define X2 10
+#define X3 10
+#define X4 10
 
 // Derived constants
 #define TOTAL_SEATS (X1 + 2 * X2 + 3 * X3 + 4 * X4)
 #define TABLE_COUNT (X1 + X2 + X3 + X4)
-#define BELT_SIZE TABLE_COUNT
+#define BELT_SIZE 500
 #define MAX_QUEUE 2000
 #define COLOR_COUNT 6
 #define MAX_TABLE_SLOTS 4

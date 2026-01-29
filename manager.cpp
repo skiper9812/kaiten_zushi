@@ -83,7 +83,7 @@ void startManager() {
             case 3:
                 state->restaurantMode = CLOSED;
                 evacuate_flag = 1;
-                // Don't send another SIGTERM - main process already sent it
+                kill(0, SIGTERM);  // Propagate to all processes in group
                 break;
             }
 

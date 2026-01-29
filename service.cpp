@@ -75,37 +75,23 @@ int assignTable(RestaurantState* state, bool vipStatus, int groupSize, int group
 }
 
 void handleQueueGroup(const ClientRequest& req) {
-    P(SEM_MUTEX_QUEUE);
-    int freeNormal = semctl(semId, SEM_QUEUE_FREE_NORMAL, GETVAL);
-    int freeVip = semctl(semId, SEM_QUEUE_FREE_VIP, GETVAL);
-    V(SEM_MUTEX_QUEUE);
-
     char logBuffer[256];
-    if ((!req.vipStatus && freeNormal > 0) || (req.vipStatus && freeVip > 0)) {
-        bool queued = queuePush(req.pid, req.vipStatus);
-        if (queued) {
-            snprintf(logBuffer, sizeof(logBuffer),
-                "\033[32m[%ld] [SERVICE]: GROUP QUEUED | pid=%d groupID=%d size=%d vip=%d\033[0m",
-                time(NULL), req.pid, req.groupID, req.groupSize, req.vipStatus);
-            fifoLog(logBuffer);
-            return;
-        }
+    
+    // Blocking queue - queuePush will block until space available
+    bool queued = queuePush(req.pid, req.vipStatus);
+    
+    if (queued) {
+        snprintf(logBuffer, sizeof(logBuffer),
+            "\033[32m[%ld] [SERVICE]: GROUP QUEUED | pid=%d groupID=%d size=%d vip=%d\033[0m",
+            time(NULL), req.pid, req.groupID, req.groupSize, req.vipStatus);
+        fifoLog(logBuffer);
+        return;
     }
-
-    ServiceRequest reject{};
-    reject.mtype = req.pid;
-    reject.type = REQ_GROUP_REJECT;
-    queueSendRequest(reject);
-
-    if (terminate_flag)
-        snprintf(logBuffer, sizeof(logBuffer),
-            "\033[32m[%ld] [SERVICE]: GROUP REJECTED | pid=%d groupID=%d size=%d reason=COM3\033[0m",
-            time(NULL), req.pid, req.groupID, req.groupSize);
-    else
-        snprintf(logBuffer, sizeof(logBuffer),
-            "\033[32m[%ld] [SERVICE]: GROUP REJECTED | pid=%d groupID=%d size=%d reason=NO_SPACE\033[0m",
-            time(NULL), req.pid, req.groupID, req.groupSize);
-
+    
+    // Only reach here if terminated during blocking wait
+    snprintf(logBuffer, sizeof(logBuffer),
+        "\033[33m[%ld] [SERVICE]: GROUP QUEUE CANCELLED | pid=%d groupID=%d reason=SHUTDOWN\033[0m",
+        time(NULL), req.pid, req.groupID);
     fifoLog(logBuffer);
 }
 
