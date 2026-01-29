@@ -1,4 +1,4 @@
-#pragma once
+ï»¿#pragma once
 #include "error_handler.h"
 #include <sys/types.h>
 #include <sys/ipc.h>
@@ -16,26 +16,40 @@
 #include <string.h>
 #include <time.h>
 
+// =====================================================
+// SIMULATION CONTROL
+// =====================================================
+
+// Set to 1 to skip all sleeps during testing
+#define SKIP_DELAYS 1
+
+#if SKIP_DELAYS
+    #define SIM_SLEEP(us) ((void)0)
+#else
+    #define SIM_SLEEP(us) usleep(us)
+#endif
+
+// Simulation duration in seconds (maps to TP->TK restaurant hours)
+#define SIMULATION_DURATION_SECONDS 60
+
 #define FIFO_PATH "/tmp/restauracja_fifo"
 #define CLOSE_FIFO "/tmp/close_restaurant_fifo"
 
-//Godziny otwarcia i zamkniêcia
+// Opening and closing hours (for display/logging purposes)
 #define TP 12
 #define TK 20
 
-// Liczba stolików wed³ug rozmiaru
+// Table counts by size
 #define X1 4
 #define X2 4
 #define X3 4
 #define X4 4
 
-//Reszta sta³ych
+// Derived constants
 #define TOTAL_SEATS (X1 + 2 * X2 + 3 * X3 + 4 * X4)
 #define TABLE_COUNT (X1 + X2 + X3 + X4)
-#define MAX_DISHES_ON_BELT 10
 #define BELT_SIZE TABLE_COUNT
-#define MSG_PREMIUM_TYPE 1
-#define MAX_QUEUE 20
+#define MAX_QUEUE 2000
 #define COLOR_COUNT 6
 #define MAX_TABLE_SLOTS 4
 
@@ -112,46 +126,46 @@ struct RestaurantState {
 
     int nextDishID;
 
+    time_t startTime;
+
     Table tables[TABLE_COUNT];
     Dish belt[BELT_SIZE];
 
     GroupQueue normalQueue;
     GroupQueue vipQueue;
 
+    int producedCount[COLOR_COUNT];
+    int producedValue[COLOR_COUNT];
     int remainingCount[COLOR_COUNT];
     int soldCount[COLOR_COUNT];
     int soldValue[COLOR_COUNT];
+    int wastedCount[COLOR_COUNT];
+    int wastedValue[COLOR_COUNT];
     int revenue;
     
-    int sig_accelerate;
-    int sig_slowdown;
-    int sig_evacuate;
+    int sigAccelerate;
+    int sigSlowdown;
+    int sigEvacuate;
 };
 
 enum {
-    // Mutexy ogólne
     SEM_MUTEX_STATE = 0,
     SEM_MUTEX_LOGS,
 
-    // Pas transmisyjny (belt)
     SEM_MUTEX_BELT,
     SEM_BELT_SLOTS,
     SEM_BELT_ITEMS,
 
-    // Sto³y i klienci
     SEM_TABLES,
     SEM_CLIENT_FREE,
     SEM_CLIENT_ITEMS,
 
-    // Us³ugi
     SEM_SERVICE_FREE,
     SEM_SERVICE_ITEMS,
 
-    // Premium
     SEM_PREMIUM_FREE,
     SEM_PREMIUM_ITEMS,
 
-    // Kolejka do lokalu
     SEM_MUTEX_QUEUE,
     SEM_QUEUE_FREE_VIP,
     SEM_QUEUE_FREE_NORMAL,

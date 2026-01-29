@@ -1,10 +1,10 @@
-#pragma once
+ï»¿#pragma once
 #include "ipc_manager.h"
 #include "common.h"
 #include <pthread.h>
 
 // =====================================================
-// Group – czysty obiekt danych
+// Group - pure data object
 // =====================================================
 
 class Group {
@@ -23,7 +23,6 @@ private:
 public:
     static int nextGroupID;
 
-    // ===== tworzenie grupy =====
     Group() : tableIndex(-1) {
         groupID = nextGroupID++;
         groupSize = rand() % 4 + 1;
@@ -48,21 +47,45 @@ public:
         pthread_mutex_destroy(&mutex);
     }
 
-    // ===== gettery =====
     int  getGroupID() const { return groupID; }
     int  getGroupSize() const { return groupSize; }
     int  getAdultCount() const { return adultCount; }
     int  getChildCount() const { return childCount; }
     bool getVipStatus() const { return vipStatus; }
-    int  getDishesToEat() const { return dishesToEat; }
-    int  getTableIndex() const { return tableIndex; }
-    int  getOrdersLeft() { pthread_mutex_lock(&mutex); int o = ordersLeft; pthread_mutex_unlock(&mutex); return o; }
-    const int* getEatenCount() const { return eatenCount; }
+    
+    int getDishesToEat() {
+        pthread_mutex_lock(&mutex);
+        int v = dishesToEat;
+        pthread_mutex_unlock(&mutex);
+        return v;
+    }
 
-    // ===== settery =====
-    void setTableIndex(int idx) { tableIndex = idx; }
+    int getTableIndex() {
+        pthread_mutex_lock(&mutex);
+        int v = tableIndex;
+        pthread_mutex_unlock(&mutex);
+        return v;
+    }
 
-    // ===== mutatory logiczne =====
+    int getOrdersLeft() { 
+        pthread_mutex_lock(&mutex); 
+        int o = ordersLeft; 
+        pthread_mutex_unlock(&mutex); 
+        return o; 
+    }
+
+    void getEatenCount(int out[COLOR_COUNT]) {
+        pthread_mutex_lock(&mutex);
+        memcpy(out, eatenCount, sizeof(eatenCount));
+        pthread_mutex_unlock(&mutex);
+    }
+
+    void setTableIndex(int idx) {
+        pthread_mutex_lock(&mutex);
+        tableIndex = idx;
+        pthread_mutex_unlock(&mutex);
+    }
+
     bool orderPremiumDish() {
         bool orderPremium = (rand() % 100) < 20;
         pthread_mutex_lock(&mutex);
@@ -105,8 +128,8 @@ struct PersonCtx {
 };
 
 // =====================================================
-// API procesu clients
+// Client process API
 // =====================================================
 
-void start_clients();
-void group_loop(Group& g);
+void startClients();
+void groupLoop(Group& g);

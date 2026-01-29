@@ -1,4 +1,4 @@
-#pragma once
+ï»¿#pragma once
 #include "common.h"
 
 #define CLIENT_QUEUE_SIZE 200
@@ -10,12 +10,12 @@
 #define PREMIUM_REQ_QUEUE 'Z'
 #define MAX_MSG_TEXT 128
 
-extern int client_qid;
-extern int service_qid;
-extern int premium_qid;
+extern int clientQid;
+extern int serviceQid;
+extern int premiumQid;
 
 // =====================================================
-// IPC – protokó³ clients <-> reszta systemu
+// IPC - protocol clients <-> rest of system
 // =====================================================
 
 enum ClientRequestType {
@@ -67,73 +67,71 @@ typedef struct {
 } PremiumRequest;
 
 // -----------------------------------------------------
-// Globalne klucze i identyfikatory IPC
+// Global IPC keys and identifiers
 // -----------------------------------------------------
 
 extern key_t SHM_KEY;
 extern key_t SEM_KEY;
 extern key_t MSG_KEY;
 
-extern int shm_id;
-extern int sem_id;
-extern int msg_id;
+extern int shmId;
+extern int semId;
+extern int msgId;
 extern RestaurantState* state;
 
-extern int fifo_fd_write;
-extern int fifo_fd_read;
+extern int fifoFdWrite;
+extern int fifoFdRead;
 
 // -----------------------------------------------------
-// Funkcje dostêpu do stanu
+// State access functions
 // -----------------------------------------------------
 
-RestaurantState* get_state();
-void handle_manager_signal(int sig);
+RestaurantState* getState();
+void handleManagerSignal(int sig);
 
 // -----------------------------------------------------
-// Inicjalizacja / czyszczenie IPC
+// IPC initialization / cleanup
 // -----------------------------------------------------
 
-int ipc_init();
-void ipc_cleanup();
+int ipcInit();
+void ipcCleanup();
 
 // -----------------------------------------------------
-// Semafory
+// Semaphores
 // -----------------------------------------------------
 
- static void sem_set(int semnum, int val);
 void P(int semnum);
 void V(int semnum);
 
 // -----------------------------------------------------
-// Kolejki komunikatów (System V)
+// Message queues (System V)
 // -----------------------------------------------------
 
-int queue_pop(int requiredSize, bool vipSuitable);
-bool queue_push(int groupID, bool vipStatus);
+int queuePop(int requiredSize, bool vipSuitable);
+bool queuePush(int groupID, bool vipStatus);
 
-int create_queue(char proj_id);
-int connect_queue(char proj_id);
-void remove_queue(char proj_id);
+int createQueue(char projId);
+int connectQueue(char projId);
+void removeQueue(char projId);
 
-void queue_send_request(const ClientRequest& msg);
-void queue_recv_request(ClientRequest& msg, long mtype = 0);
-void queue_send_response(const ClientResponse& msg);
-void queue_recv_response(ClientResponse& msg, long mtype = 0);
+void queueSendRequest(const ClientRequest& msg);
+void queueRecvRequest(ClientRequest& msg, long mtype = 0);
+void queueSendResponse(const ClientResponse& msg);
+void queueRecvResponse(ClientResponse& msg, long mtype = 0);
 
-void queue_send_request(const ServiceRequest& msg);
-void queue_recv_request(ServiceRequest& msg, long mtype = 0);
+void queueSendRequest(const ServiceRequest& msg);
+void queueRecvRequest(ServiceRequest& msg, long mtype = 0);
 
-void queue_send_request(const PremiumRequest& msg);
-bool queue_recv_request(PremiumRequest& msg, long mtype = 0);
+void queueSendRequest(const PremiumRequest& msg);
+bool queueRecvRequest(PremiumRequest& msg, long mtype = 0);
 
 // -----------------------------------------------------
 // FIFO logger
 // -----------------------------------------------------
 
-void fifo_init();
-void fifo_open_write();
-void fifo_close_write();
-void fifo_log(const char* msg);
-void logger_loop(const char* filename);
-void fifo_init_close_signal();
-//void terminate_handler(int sig);
+void fifoInit();
+void fifoOpenWrite();
+void fifoCloseWrite();
+void fifoLog(const char* msg);
+void loggerLoop(const char* filename);
+void fifoInitCloseSignal();

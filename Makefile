@@ -1,9 +1,9 @@
 # Kompilator i opcje
 CXX = g++
-CXXFLAGS = -Wall -std=c++17 -g
+CXXFLAGS = -Wall -std=c++17 -g -pthread
 
 # Pliki zrodlowe
-SRC = main.cpp chef.cpp client.cpp error_handler.cpp manager.cpp service.cpp single_client.cpp
+SRC = main.cpp chef.cpp client.cpp error_handler.cpp manager.cpp service.cpp ipc_manager.cpp belt.cpp reports.cpp
 
 # Pliki obiektowe
 OBJ = $(SRC:.cpp=.o)

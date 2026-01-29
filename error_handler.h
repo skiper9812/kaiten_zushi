@@ -1,4 +1,4 @@
-#pragma once
+ï»¿#pragma once
 #include <stdio.h>
 #include <stdlib.h>
 #include <errno.h>
@@ -11,36 +11,35 @@ typedef enum {
     ERR_DECISION_FATAL
 } ErrorDecision;
 
-extern bool fatal_error;
+extern bool fatalError;
 extern volatile sig_atomic_t terminate_flag;
 extern volatile sig_atomic_t evacuate_flag;
 
-// Kody b³êdów specyficzne dla projektu
+// Project-specific error codes
 typedef enum {
-    ERR_IPC_INIT,       // b³¹d inicjalizacji IPC
-    ERR_IPC_MSG,        // b³¹d operacji na kolejce komunikatów
-    ERR_SEM_OP,         // b³¹d operacji na semaforze
-    ERR_MEM_ALLOC,      // b³¹d alokacji pamiêci
-    ERR_FILE_IO,        // b³¹d operacji plikowej
-    ERR_INVALID_INPUT,  // niepoprawne dane wejœciowe
-    ERR_OVERFLOW,       // przepe³nienie zasobu
-    ERR_UNKNOWN         // nieznany b³¹d
+    ERR_IPC_INIT,
+    ERR_IPC_MSG,
+    ERR_SEM_OP,
+    ERR_MEM_ALLOC,
+    ERR_FILE_IO,
+    ERR_INVALID_INPUT,
+    ERR_OVERFLOW,
+    ERR_UNKNOWN
 } ErrorCode;
 
-// Funkcja obs³ugi b³êdów
-// Wyœwietla komunikat, opcjonalnie raportuje errno i decyduje o dalszym dzia³aniu programu
-ErrorDecision handle_error(ErrorCode code, const char* msg, int saved_errno);
+// Error handling function
+ErrorDecision handleError(ErrorCode code, const char* msg, int savedErrno);
 
-// Makro u³atwiaj¹ce sprawdzanie wyników funkcji systemowych
+// Macros for checking system call results
 #define CHECK_ERR(call, code, msg)                     \
     ({                                                 \
         ErrorDecision _dec = ERR_DECISION_IGNORE;      \
         if ((call) == -1) {                            \
-            int saved_errno = errno;                   \
-            _dec = handle_error(code, msg, saved_errno); \
+            int savedErrno = errno;                    \
+            _dec = handleError(code, msg, savedErrno); \
         }                                              \
         _dec;                                          \
     })
 
-#define CHECK_NULL(ptr, code, msg)                 \
-    if ((ptr) == NULL) handle_error(code, msg, 0);
+#define CHECK_NULL(ptr, code, msg)                     \
+    if ((ptr) == NULL) handleError(code, msg, 0);

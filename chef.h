@@ -1,6 +1,5 @@
-#pragma once
-#include "common.h"
+﻿#pragma once
 #include "ipc_manager.h"
 
-static int check_close_signal();
-void start_chef();
+void startChef();
+void chefPutDish(RestaurantState* state, int dish, int target);

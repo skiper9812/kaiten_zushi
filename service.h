@@ -1,7 +1,4 @@
-#pragma once
-#include "common.h"
+﻿#pragma once
 #include "ipc_manager.h"
-#include "client.h"
 
-static int check_close_signal();
-void start_service();
+void startService();

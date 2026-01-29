@@ -1,17 +1,6 @@
-#include "chef.h"
+ï»¿#include "chef.h"
 
-static int check_close_signal() {
-    char buf[32];
-    int fd = open(CLOSE_FIFO, O_RDONLY | O_NONBLOCK);
-    if (fd == -1) return 0; // FIFO nie istnieje
-    int ret = read(fd, buf, sizeof(buf));
-    close(fd);
-    if (ret > 0 && strcmp(buf, "CLOSE_RESTAURANT") == 0)
-        return 1; // sygna³ zamkniêcia
-    return 0;
-}
-
-void chef_put_dish(RestaurantState* state, int dish, int target) {
+void chefPutDish(RestaurantState* state, int dish, int target) {
     int idx = dish > 2 ? dish : rand() % 3;
 
     Dish plate;
@@ -22,32 +11,38 @@ void chef_put_dish(RestaurantState* state, int dish, int target) {
     P(SEM_BELT_SLOTS);
     P(SEM_MUTEX_BELT);
 
-    Dish last = state->belt[BELT_SIZE - 1];
+    // Find first empty slot on belt (no rotation here - belt process handles that)
+    int slotIdx = -1;
+    for (int i = 0; i < BELT_SIZE; ++i) {
+        if (state->belt[i].dishID == 0) {
+            slotIdx = i;
+            break;
+        }
+    }
 
-    for (int i = BELT_SIZE - 1; i > 0; --i)
-        state->belt[i] = state->belt[i - 1];
-
-    state->belt[0] = last;
-
-    Dish& slot = state->belt[0];
-
-    if (slot.dishID == 0) {
+    if (slotIdx != -1) {
         plate.dishID = state->nextDishID++;
-        slot = plate;
+        state->belt[slotIdx] = plate;
+
+        int colorIdx = colorToIndex(plate.color);
+        state->producedCount[colorIdx]++;
+        state->producedValue[colorIdx] += plate.price;
+
         V(SEM_BELT_ITEMS);
-    } else
+
+        char buffer[128];
+        snprintf(buffer, sizeof(buffer),
+            "\033[38;5;214m[%ld] [CHEF]: DISH %d COOKED | slot=%d color=%s price=%d targetGroupID=%d\033[0m",
+            time(NULL), plate.dishID, slotIdx, colorToString(plate.color), plate.price, plate.targetGroupID);
+        fifoLog(buffer);
+    } else {
         V(SEM_BELT_SLOTS);
+    }
 
     V(SEM_MUTEX_BELT);
-
-    char buffer[128];
-    snprintf(buffer, sizeof(buffer),
-        "\033[38;5;214m[%ld] [CHEF]: DISH %d COOKED | color=%s price=%d targetTableID=%d\033[0m",
-        time(NULL), plate.dishID, colorToString(plate.color), plate.price, plate.targetGroupID);
-    fifo_log(buffer);
 }
 
-static inline int speed_multiplier(int speed) {
+static inline int speedMultiplier(int speed) {
     switch (speed) {
     case SPEED_FAST:   return 1;
     case SPEED_NORMAL: return 2;
@@ -56,54 +51,39 @@ static inline int speed_multiplier(int speed) {
     }
 }
 
-long sleep_time(int base_us, int speed) {
-    int mul = speed_multiplier(speed);
-
-    int min_us = 1000000 * mul / 2;
-    int max_us = 2000000 * mul / 2;
-
-    return base_us +
-        min_us +
-        (rand() % (max_us - min_us + 1));
+long sleepTime(int baseUs, int speed) {
+    int mul = speedMultiplier(speed);
+    int minUs = 1000000 * mul / 2;
+    int maxUs = 2000000 * mul / 2;
+    return baseUs + minUs + (rand() % (maxUs - minUs + 1));
 }
 
-void start_chef() {
-    RestaurantState* state = get_state();
-    client_qid = connect_queue(CLIENT_REQ_QUEUE);
-    service_qid = connect_queue(SERVICE_REQ_QUEUE);
-    premium_qid = connect_queue(PREMIUM_REQ_QUEUE);
+void startChef() {
+    RestaurantState* state = getState();
+    clientQid = connectQueue(CLIENT_REQ_QUEUE);
+    serviceQid = connectQueue(SERVICE_REQ_QUEUE);
+    premiumQid = connectQueue(PREMIUM_REQ_QUEUE);
 
-    fifo_open_write();
+    fifoOpenWrite();
     int speed = 1;
 
-    while (!terminate_flag) {
-        int do_accel = 0;
-        int do_slow = 0;
-        int do_evacuate = 0;
-
+    while (!terminate_flag && !evacuate_flag) {
         PremiumRequest order;
 
-        if (queue_recv_request(order)) {
-            chef_put_dish(state, order.dish, order.groupID);
-        }
-        else {
-            chef_put_dish(state, -1, -1);
+        if (queueRecvRequest(order)) {
+            chefPutDish(state, order.dish, order.groupID);
+        } else {
+            chefPutDish(state, -1, -1);
         }
 
         P(SEM_MUTEX_STATE);
         speed = state->simulationSpeed;
         V(SEM_MUTEX_STATE);
 
-        long wait = sleep_time(250000, speed);
-        char buffer[128];
-        snprintf(buffer, sizeof(buffer),
-            "\033[38;5;214m[%ld] [CHEF]: WAIT %ld\033[0m",
-            time(NULL), wait);
-        fifo_log(buffer);
+        long wait = sleepTime(250000, speed);
 
-        usleep(wait);
+        SIM_SLEEP(wait);
     }
 
-    fifo_close_write();
+    fifoCloseWrite();
 }
-

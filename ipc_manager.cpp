@@ -11,29 +11,29 @@
 #include <stdlib.h>
 #include <stddef.h>
 
-/* ---------- DEFINICJE GLOBALI ---------- */
+/* ---------- GLOBAL DEFINITIONS ---------- */
 
 key_t SHM_KEY = -1;
 key_t SEM_KEY = -1;
 key_t MSG_KEY = -1;
 
-int shm_id = -1;
-int sem_id = -1;
-int msg_id = -1;
+int shmId = -1;
+int semId = -1;
+int msgId = -1;
 
-int client_qid = -1;
-int service_qid = -1;
-int premium_qid = -1;
+int clientQid = -1;
+int serviceQid = -1;
+int premiumQid = -1;
 
 RestaurantState* state = nullptr;
 
-int fifo_fd_write = -1;
-int fifo_fd_read = -1;
+int fifoFdWrite = -1;
+int fifoFdRead = -1;
 
 /* ---------- MESSAGE QUEUES ---------- */
 
-int create_queue(char proj_id) {
-    key_t key = ftok(".", proj_id);
+int createQueue(char projId) {
+    key_t key = ftok(".", projId);
     CHECK_ERR(key, ERR_IPC_INIT, "ftok failed");
 
     int qid = msgget(key, IPC_CREAT | 0600);
@@ -42,8 +42,8 @@ int create_queue(char proj_id) {
     return qid;
 }
 
-int connect_queue(char proj_id) {
-    key_t key = ftok(".", proj_id);
+int connectQueue(char projId) {
+    key_t key = ftok(".", projId);
     CHECK_ERR(key, ERR_IPC_INIT, "ftok failed");
 
     int qid = msgget(key, 0600);
@@ -52,9 +52,8 @@ int connect_queue(char proj_id) {
     return qid;
 }
 
-
-void remove_queue(char proj_id) {
-    CHECK_ERR(msgctl(proj_id, IPC_RMID, nullptr), ERR_IPC_MSG, "msgctl remove failed");
+void removeQueue(char projId) {
+    CHECK_ERR(msgctl(projId, IPC_RMID, nullptr), ERR_IPC_MSG, "msgctl remove failed");
 }
 
 template<typename T>
@@ -68,15 +67,15 @@ struct QueueRecvTraits<PremiumRequest> {
 };
 
 template<typename T>
-void queue_send(int qid, int sem_free, int sem_items,
-    const T& msg, ErrorCode err, const char* err_msg)
+void queueSend(int qid, int semFree, int semItems,
+    const T& msg, ErrorCode err, const char* errMsg)
 {
-    P(sem_free);
+    P(semFree);
 
     ErrorDecision d = CHECK_ERR(
         msgsnd(qid, &msg, sizeof(T) - sizeof(long), 0),
         err,
-        err_msg
+        errMsg
     );
 
     if (d == ERR_DECISION_IGNORE) {
@@ -88,23 +87,22 @@ void queue_send(int qid, int sem_free, int sem_items,
 }
 
 template<typename T>
-bool queue_recv(int qid, int sem_items, int sem_free,
+bool queueRecv(int qid, int semItems, int semFree,
     T& msg, long mtype,
-    ErrorCode err, const char* err_msg)
+    ErrorCode err, const char* errMsg)
 {
-
     constexpr int flags = QueueRecvTraits<T>::flags;
 
     for (;;) {
         ssize_t ret = msgrcv(qid, &msg, sizeof(T) - sizeof(long), mtype, flags);
 
         if (ret >= 0) {
-            V(sem_free);
+            V(semFree);
             return true;
         }
 
         if (errno == EINTR) {
-            if (terminate_flag && !evacuate_flag)
+            if (terminate_flag || evacuate_flag)
                 return false;
             continue;
         }
@@ -115,7 +113,7 @@ bool queue_recv(int qid, int sem_items, int sem_free,
             }
         }
 
-        ErrorDecision d = handle_error(err, err_msg, errno);
+        ErrorDecision d = handleError(err, errMsg, errno);
 
         if (d == ERR_DECISION_RETRY)
             continue;
@@ -124,8 +122,8 @@ bool queue_recv(int qid, int sem_items, int sem_free,
     }
 }
 
-void queue_send_request(const ServiceRequest& msg) {
-    queue_send(service_qid,
+void queueSendRequest(const ServiceRequest& msg) {
+    queueSend(serviceQid,
         SEM_SERVICE_FREE,
         SEM_SERVICE_ITEMS,
         msg,
@@ -133,8 +131,8 @@ void queue_send_request(const ServiceRequest& msg) {
         "msgsnd ServiceRequest failed");
 }
 
-void queue_recv_request(ServiceRequest& msg, long mtype) {
-    queue_recv(service_qid,
+void queueRecvRequest(ServiceRequest& msg, long mtype) {
+    queueRecv(serviceQid,
         SEM_SERVICE_ITEMS,
         SEM_SERVICE_FREE,
         msg,
@@ -143,8 +141,8 @@ void queue_recv_request(ServiceRequest& msg, long mtype) {
         "msgrcv ServiceRequest failed");
 }
 
-void queue_send_request(const PremiumRequest& msg) {
-    queue_send(premium_qid,
+void queueSendRequest(const PremiumRequest& msg) {
+    queueSend(premiumQid,
         SEM_PREMIUM_FREE,
         SEM_PREMIUM_ITEMS,
         msg,
@@ -152,8 +150,8 @@ void queue_send_request(const PremiumRequest& msg) {
         "msgsnd PremiumRequest failed");
 }
 
-bool queue_recv_request(PremiumRequest& msg, long mtype) {
-    return queue_recv(premium_qid,
+bool queueRecvRequest(PremiumRequest& msg, long mtype) {
+    return queueRecv(premiumQid,
         SEM_PREMIUM_ITEMS,
         SEM_PREMIUM_FREE,
         msg,
@@ -162,8 +160,8 @@ bool queue_recv_request(PremiumRequest& msg, long mtype) {
         "msgrcv PremiumRequest failed");
 }
 
-void queue_send_request(const ClientRequest& msg) {
-    queue_send(client_qid,
+void queueSendRequest(const ClientRequest& msg) {
+    queueSend(clientQid,
         SEM_CLIENT_FREE,
         SEM_CLIENT_ITEMS,
         msg,
@@ -171,8 +169,8 @@ void queue_send_request(const ClientRequest& msg) {
         "msgsnd ClientRequest failed");
 }
 
-void queue_recv_request(ClientRequest& msg, long mtype) {
-    queue_recv(client_qid,
+void queueRecvRequest(ClientRequest& msg, long mtype) {
+    queueRecv(clientQid,
         SEM_CLIENT_ITEMS,
         SEM_CLIENT_FREE,
         msg,
@@ -181,8 +179,8 @@ void queue_recv_request(ClientRequest& msg, long mtype) {
         "msgrcv ClientRequest failed");
 }
 
-void queue_send_response(const ClientResponse& msg) {
-    queue_send(client_qid,
+void queueSendResponse(const ClientResponse& msg) {
+    queueSend(clientQid,
         SEM_CLIENT_FREE,
         SEM_CLIENT_ITEMS,
         msg,
@@ -190,8 +188,8 @@ void queue_send_response(const ClientResponse& msg) {
         "msgsnd ClientResponse failed");
 }
 
-void queue_recv_response(ClientResponse& msg, long mtype) {
-    queue_recv(client_qid,
+void queueRecvResponse(ClientResponse& msg, long mtype) {
+    queueRecv(clientQid,
         SEM_CLIENT_ITEMS,
         SEM_CLIENT_FREE,
         msg,
@@ -202,7 +200,7 @@ void queue_recv_response(ClientResponse& msg, long mtype) {
 
 /* ---------- FIFO LOGGER ---------- */
 
-void fifo_init() {
+void fifoInit() {
     if (access(FIFO_PATH, F_OK) == -1) {
         if (mkfifo(FIFO_PATH, 0600) == -1) {
             CHECK_ERR(-1, ERR_IPC_INIT, "mkfifo");
@@ -210,39 +208,43 @@ void fifo_init() {
     }
 }
 
-void fifo_init_close_signal() {
-    mkfifo(CLOSE_FIFO, 0600); // ignoruj błąd, jeśli istnieje
+void fifoInitCloseSignal() {
+    mkfifo(CLOSE_FIFO, 0600);
 }
 
-void fifo_open_write() {
-    if (fifo_fd_write == -1) {
-        fifo_fd_write = open(FIFO_PATH, O_WRONLY);
-        CHECK_ERR(fifo_fd_write, ERR_IPC_INIT, "fifo open write");
+void fifoOpenWrite() {
+    if (fifoFdWrite == -1) {
+        fifoFdWrite = open(FIFO_PATH, O_WRONLY);
+        CHECK_ERR(fifoFdWrite, ERR_IPC_INIT, "fifo open write");
     }
 }
 
-void fifo_close_write() {
-    if (fifo_fd_write != -1) {
-        close(fifo_fd_write);
-        fifo_fd_write = -1;
+void fifoCloseWrite() {
+    if (fifoFdWrite != -1) {
+        close(fifoFdWrite);
+        fifoFdWrite = -1;
     }
 }
 
-void fifo_log(const char* msg) {
-    if (terminate_flag && !evacuate_flag)
-        return;
-
-    CHECK_ERR(fifo_fd_write, ERR_IPC_INIT, "fifo open write");
+void fifoLog(const char* msg) {
+    if (fifoFdWrite == -1) return;  // Silently skip if not open
     char buffer[512];
     int len = snprintf(buffer, sizeof(buffer), "%s\n", msg);
-    if (write(fifo_fd_write, buffer, len) == -1) {
-        fprintf(stderr, "FIFO write error: %s\n", strerror(errno));
+    
+    ssize_t written = 0;
+    while (written < len) {
+        ssize_t ret = write(fifoFdWrite, buffer + written, len - written);
+        if (ret == -1) {
+            if (errno == EINTR) continue;  // Retry on interrupt
+            return;  // Silently fail on other errors
+        }
+        written += ret;
     }
 }
 
-void logger_loop(const char* filename) {
-    fifo_fd_read = open(FIFO_PATH, O_RDONLY);
-    CHECK_ERR(fifo_fd_read, ERR_IPC_INIT, "fifo open read");
+void loggerLoop(const char* filename) {
+    fifoFdRead = open(FIFO_PATH, O_RDONLY);
+    CHECK_ERR(fifoFdRead, ERR_IPC_INIT, "fifo open read");
 
     FILE* file = fopen(filename, "w");
     CHECK_NULL(file, ERR_FILE_IO, "fopen log file");
@@ -250,7 +252,7 @@ void logger_loop(const char* filename) {
     char buffer[512];
     ssize_t n;
 
-    while ((n = read(fifo_fd_read, buffer, sizeof(buffer) - 1)) > 0) {
+    while ((n = read(fifoFdRead, buffer, sizeof(buffer) - 1)) > 0) {
         if (n == 1 && buffer[0] == -1) break;
         buffer[n] = '\0';
         fprintf(file, "%s", buffer);
@@ -258,47 +260,61 @@ void logger_loop(const char* filename) {
     }
 
     fclose(file);
-    close(fifo_fd_read);
-    fifo_fd_read = -1;
+    close(fifoFdRead);
+    fifoFdRead = -1;
     _exit(0);
 }
 
 /* ---------- SEMAPHORES ---------- */
 
-static void sem_set(int semnum, int val) {
+static void semSet(int semnum, int val) {
     union semun {
         int val;
         struct semid_ds* buf;
         unsigned short* array;
     } arg;
     arg.val = val;
-    CHECK_ERR(semctl(sem_id, semnum, SETVAL, arg), ERR_SEM_OP, "semctl SETVAL");
+    CHECK_ERR(semctl(semId, semnum, SETVAL, arg), ERR_SEM_OP, "semctl SETVAL");
 }
 
 void P(int semnum) {
-    struct sembuf op = { (unsigned short)semnum, -1, 0 };
+    struct sembuf op = { (unsigned short)semnum, -1, IPC_NOWAIT };
 
     for (;;) {
-        ErrorDecision d = CHECK_ERR(semop(sem_id, &op, 1),
-            ERR_SEM_OP, "semop P");
+        if (terminate_flag || evacuate_flag)
+            return;
+
+        int ret = semop(semId, &op, 1);
+        if (ret != -1)
+            return;
+
+        int savedErrno = errno;
+        
+        if (savedErrno == EAGAIN) {
+            SIM_SLEEP(100000);  // 100ms polling
+            continue;
+        }
+
+        if (savedErrno == EINTR || savedErrno == EIDRM) {
+            if (terminate_flag || evacuate_flag)
+                return;
+            continue;
+        }
+
+        ErrorDecision d = handleError(ERR_SEM_OP, "semop P", savedErrno);
 
         if (d == ERR_DECISION_IGNORE)
             return;
-
-        if (d == ERR_DECISION_RETRY)
-            continue;
-
         if (d == ERR_DECISION_FATAL)
             exit(EXIT_FAILURE);
     }
 }
 
-
 void V(int semnum) {
     struct sembuf op = { (unsigned short)semnum, 1, 0 };
 
     for (;;) {
-        ErrorDecision d = CHECK_ERR(semop(sem_id, &op, 1),
+        ErrorDecision d = CHECK_ERR(semop(semId, &op, 1),
             ERR_SEM_OP, "semop V");
 
         if (d == ERR_DECISION_IGNORE)
@@ -312,108 +328,106 @@ void V(int semnum) {
     }
 }
 
-/* ---------- QUEUES (VIP / NORMAL) ---------- */
+/* ---------- BLOCKING QUEUE (VIP / NORMAL) ---------- */
 
-bool queue_push(pid_t groupPid, bool vipStatus) {
-    bool success = false;
+bool queuePush(pid_t groupPid, bool vipStatus) {
+    // Block until space available (blocking queue - no rejection)
+    if (vipStatus)
+        P(SEM_QUEUE_FREE_VIP);
+    else
+        P(SEM_QUEUE_FREE_NORMAL);
+
+    if (terminate_flag || evacuate_flag)
+        return false;
 
     P(SEM_MUTEX_QUEUE);
 
     if (vipStatus) {
-        if (state->vipQueue.count < MAX_QUEUE) {
-            state->vipQueue.groupPid[state->vipQueue.count++] = groupPid;
-            success = true;
-        }
-    }
-    else {
-        if (state->normalQueue.count < MAX_QUEUE) {
-            state->normalQueue.groupPid[state->normalQueue.count++] = groupPid;
-            success = true;
-        }
+        state->vipQueue.groupPid[state->vipQueue.count++] = groupPid;
+    } else {
+        state->normalQueue.groupPid[state->normalQueue.count++] = groupPid;
     }
 
     V(SEM_MUTEX_QUEUE);
 
-    if (success) {
-        if (vipStatus)
-            V(SEM_QUEUE_USED_VIP);
-        else
-            V(SEM_QUEUE_USED_NORMAL);
-    }
+    if (vipStatus)
+        V(SEM_QUEUE_USED_VIP);
+    else
+        V(SEM_QUEUE_USED_NORMAL);
 
-    return success;
+    return true;
 }
 
 /* ---------- SHM / SEM / MSG INIT ---------- */
 
-int ipc_init() {
+int ipcInit() {
     SHM_KEY = ftok(".", 'A'); CHECK_ERR(SHM_KEY, ERR_IPC_INIT, "ftok SHM");
     SEM_KEY = ftok(".", 'B'); CHECK_ERR(SEM_KEY, ERR_IPC_INIT, "ftok SEM");
 
-    shm_id = shmget(SHM_KEY, sizeof(RestaurantState), IPC_CREAT | 0600);
-    CHECK_ERR(shm_id, ERR_IPC_INIT, "shmget");
+    shmId = shmget(SHM_KEY, sizeof(RestaurantState), IPC_CREAT | 0600);
+    CHECK_ERR(shmId, ERR_IPC_INIT, "shmget");
 
-    state = (RestaurantState*)shmat(shm_id, NULL, 0);
+    state = (RestaurantState*)shmat(shmId, NULL, 0);
     CHECK_NULL(state, ERR_IPC_INIT, "shmat");
 
-    sem_id = semget(SEM_KEY, SEM_COUNT, IPC_CREAT | 0600);
-    CHECK_ERR(sem_id, ERR_IPC_INIT, "semget");
+    semId = semget(SEM_KEY, SEM_COUNT, IPC_CREAT | 0600);
+    CHECK_ERR(semId, ERR_IPC_INIT, "semget");
 
-    //sekcje krytyczne
-    sem_set(SEM_MUTEX_STATE, 1);
-    sem_set(SEM_MUTEX_QUEUE, 1);
-    sem_set(SEM_MUTEX_LOGS, 1);
-    sem_set(SEM_MUTEX_BELT, 1);
+    // Critical sections
+    semSet(SEM_MUTEX_STATE, 1);
+    semSet(SEM_MUTEX_QUEUE, 1);
+    semSet(SEM_MUTEX_LOGS, 1);
+    semSet(SEM_MUTEX_BELT, 1);
 
-    //taśma
-    sem_set(SEM_BELT_SLOTS, BELT_SIZE);
-    sem_set(SEM_BELT_ITEMS, 0);  // liczba przedmiotów na taśmie
+    // Belt
+    semSet(SEM_BELT_SLOTS, BELT_SIZE);
+    semSet(SEM_BELT_ITEMS, 0);
 
-    // Stoły
-    sem_set(SEM_TABLES, TABLE_COUNT);
+    // Tables
+    semSet(SEM_TABLES, TABLE_COUNT);
 
-    // Kolejka do lokalu
-    sem_set(SEM_QUEUE_FREE_VIP, MAX_QUEUE);
-    sem_set(SEM_QUEUE_FREE_NORMAL, MAX_QUEUE);
-    sem_set(SEM_QUEUE_USED_VIP, 0);
-    sem_set(SEM_QUEUE_USED_NORMAL, 0);
+    // Restaurant queue (blocking)
+    semSet(SEM_QUEUE_FREE_VIP, MAX_QUEUE);
+    semSet(SEM_QUEUE_FREE_NORMAL, MAX_QUEUE);
+    semSet(SEM_QUEUE_USED_VIP, 0);
+    semSet(SEM_QUEUE_USED_NORMAL, 0);
 
-    // Sterowanie kolejkami komunikatów
-    sem_set(SEM_CLIENT_FREE, CLIENT_QUEUE_SIZE);
-    sem_set(SEM_CLIENT_ITEMS, 0);
+    // Message queue control
+    semSet(SEM_CLIENT_FREE, CLIENT_QUEUE_SIZE);
+    semSet(SEM_CLIENT_ITEMS, 0);
 
-    sem_set(SEM_SERVICE_FREE, SERVICE_QUEUE_SIZE);
-    sem_set(SEM_SERVICE_ITEMS, 0);
+    semSet(SEM_SERVICE_FREE, SERVICE_QUEUE_SIZE);
+    semSet(SEM_SERVICE_ITEMS, 0);
 
-    sem_set(SEM_PREMIUM_FREE, PREMIUM_QUEUE_SIZE);
-    sem_set(SEM_PREMIUM_ITEMS, 0);
+    semSet(SEM_PREMIUM_FREE, PREMIUM_QUEUE_SIZE);
+    semSet(SEM_PREMIUM_ITEMS, 0);
 
+    clientQid = createQueue(CLIENT_REQ_QUEUE);
+    serviceQid = createQueue(SERVICE_REQ_QUEUE);
+    premiumQid = createQueue(PREMIUM_REQ_QUEUE);
 
-    client_qid = create_queue(CLIENT_REQ_QUEUE);
-    service_qid = create_queue(SERVICE_REQ_QUEUE);
-    premium_qid = create_queue(PREMIUM_REQ_QUEUE);
-
-    fifo_init();
-    fifo_init_close_signal();
+    fifoInit();
+    fifoInitCloseSignal();
     memset(state, 0, sizeof(RestaurantState));
+    state->startTime = time(NULL);
 
     return 0;
 }
 
-RestaurantState* get_state() {
+RestaurantState* getState() {
     return state;
 }
 
 /* ---------- CLEANUP ---------- */
 
-void ipc_cleanup() {
+void ipcCleanup() {
     if (state && state != (void*)-1) { shmdt(state); state = NULL; }
-    if (shm_id != -1) { shmctl(shm_id, IPC_RMID, NULL); shm_id = -1; }
-    if (sem_id != -1) { semctl(sem_id, 0, IPC_RMID); sem_id = -1; }
-    if (msg_id != -1) { msgctl(msg_id, IPC_RMID, NULL); msg_id = -1; }
-    if (client_qid != -1) msgctl(client_qid, IPC_RMID, nullptr);
-    if (service_qid != -1) msgctl(service_qid, IPC_RMID, nullptr);
-    if (premium_qid != -1) msgctl(premium_qid, IPC_RMID, nullptr);
+    if (shmId != -1) { shmctl(shmId, IPC_RMID, NULL); shmId = -1; }
+    if (semId != -1) { semctl(semId, 0, IPC_RMID); semId = -1; }
+    if (msgId != -1) { msgctl(msgId, IPC_RMID, NULL); msgId = -1; }
+    if (clientQid != -1) msgctl(clientQid, IPC_RMID, nullptr);
+    if (serviceQid != -1) msgctl(serviceQid, IPC_RMID, nullptr);
+    if (premiumQid != -1) msgctl(premiumQid, IPC_RMID, nullptr);
 
     unlink(FIFO_PATH);
     unlink(CLOSE_FIFO);

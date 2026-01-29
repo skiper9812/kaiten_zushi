@@ -1,13 +1,15 @@
 ﻿#include "service.h"
 
-static void clean_zombie_dishes(RestaurantState* state, int groupID) {
+static void cleanZombieDishes(RestaurantState* state, int groupID) {
     for (int i = 0; i < BELT_SIZE; ++i) {
         Dish& d = state->belt[i];
-
-        if (d.dishID == 0)
-            continue;
-
+        if (d.dishID == 0) continue;
         if (d.targetGroupID == groupID) {
+            // Track wasted dish before removing
+            int colorIdx = colorToIndex(d.color);
+            state->wastedCount[colorIdx]++;
+            state->wastedValue[colorIdx] += d.price;
+
             d.dishID = 0;
             d.targetGroupID = -1;
             V(SEM_BELT_SLOTS);
@@ -15,13 +17,11 @@ static void clean_zombie_dishes(RestaurantState* state, int groupID) {
     }
 }
 
-int assign_table(RestaurantState* state, bool vipStatus, int groupSize, int groupID, pid_t pid)
-{
+int assignTable(RestaurantState* state, bool vipStatus, int groupSize, int groupID, pid_t pid) {
     for (int i = 0; i < TABLE_COUNT; ++i) {
         P(SEM_MUTEX_STATE);
         Table& t = state->tables[i];
 
-        // VIP: zakaz tylko dla stolików 1-os.
         if (vipStatus && t.capacity == 1) {
             V(SEM_MUTEX_STATE);
             continue;
@@ -36,11 +36,8 @@ int assign_table(RestaurantState* state, bool vipStatus, int groupSize, int grou
         int referenceSize = -1;
         bool compatible = true;
 
-        // sprawdzenie istniejących grup
         for (int s = 0; s < MAX_TABLE_SLOTS; ++s) {
-            if (t.slots[s].pid == -1)
-                continue;
-
+            if (t.slots[s].pid == -1) continue;
             if (referenceSize == -1)
                 referenceSize = t.slots[s].size;
             else if (t.slots[s].size != referenceSize) {
@@ -49,7 +46,6 @@ int assign_table(RestaurantState* state, bool vipStatus, int groupSize, int grou
             }
         }
 
-        // jeżeli stolik nie jest pusty → musi być zgodność liczebności
         if (referenceSize != -1 && referenceSize != groupSize)
             compatible = false;
 
@@ -58,10 +54,8 @@ int assign_table(RestaurantState* state, bool vipStatus, int groupSize, int grou
             continue;
         }
 
-        // szukamy wolnego slotu
         for (int s = 0; s < MAX_TABLE_SLOTS; ++s) {
-            if (t.slots[s].pid != -1)
-                continue;
+            if (t.slots[s].pid != -1) continue;
 
             t.slots[s].pid = pid;
             t.slots[s].size = groupSize;
@@ -69,8 +63,7 @@ int assign_table(RestaurantState* state, bool vipStatus, int groupSize, int grou
 
             t.occupiedSeats += groupSize;
             state->currentGuestCount += groupSize;
-            if (vipStatus)
-                state->currentVIPCount++;
+            if (vipStatus) state->currentVIPCount++;
 
             V(SEM_MUTEX_STATE);
             return i;
@@ -78,28 +71,23 @@ int assign_table(RestaurantState* state, bool vipStatus, int groupSize, int grou
 
         V(SEM_MUTEX_STATE);
     }
-
     return -1;
 }
 
-void handle_queue_group(const ClientRequest& req) {
+void handleQueueGroup(const ClientRequest& req) {
     P(SEM_MUTEX_QUEUE);
-    int freeNormal = semctl(sem_id, SEM_QUEUE_FREE_NORMAL, GETVAL);
-    int freeVip = semctl(sem_id, SEM_QUEUE_FREE_VIP, GETVAL);
+    int freeNormal = semctl(semId, SEM_QUEUE_FREE_NORMAL, GETVAL);
+    int freeVip = semctl(semId, SEM_QUEUE_FREE_VIP, GETVAL);
     V(SEM_MUTEX_QUEUE);
 
     char logBuffer[256];
-    if ((!req.vipStatus && freeNormal > 0) ||
-        (req.vipStatus && freeVip > 0)) {
-        bool queued = queue_push(req.pid, req.vipStatus);
-
+    if ((!req.vipStatus && freeNormal > 0) || (req.vipStatus && freeVip > 0)) {
+        bool queued = queuePush(req.pid, req.vipStatus);
         if (queued) {
             snprintf(logBuffer, sizeof(logBuffer),
                 "\033[32m[%ld] [SERVICE]: GROUP QUEUED | pid=%d groupID=%d size=%d vip=%d\033[0m",
-                time(NULL), req.pid, req.groupID, req.groupSize, req.vipStatus
-            );
-
-            fifo_log(logBuffer);
+                time(NULL), req.pid, req.groupID, req.groupSize, req.vipStatus);
+            fifoLog(logBuffer);
             return;
         }
     }
@@ -107,55 +95,53 @@ void handle_queue_group(const ClientRequest& req) {
     ServiceRequest reject{};
     reject.mtype = req.pid;
     reject.type = REQ_GROUP_REJECT;
+    queueSendRequest(reject);
 
-    queue_send_request(reject);
+    if (terminate_flag)
+        snprintf(logBuffer, sizeof(logBuffer),
+            "\033[32m[%ld] [SERVICE]: GROUP REJECTED | pid=%d groupID=%d size=%d reason=COM3\033[0m",
+            time(NULL), req.pid, req.groupID, req.groupSize);
+    else
+        snprintf(logBuffer, sizeof(logBuffer),
+            "\033[32m[%ld] [SERVICE]: GROUP REJECTED | pid=%d groupID=%d size=%d reason=NO_SPACE\033[0m",
+            time(NULL), req.pid, req.groupID, req.groupSize);
 
-    snprintf(logBuffer, sizeof(logBuffer),
-        "\033[32m[%ld] [SERVICE]: GROUP REJECTED | pid=%d groupID=%d size=%d reason=NO_SPACE_IN_RESTAURANT\033[0m",
-        time(NULL), req.pid, req.groupID, req.groupSize
-    );
-
-    fifo_log(logBuffer);
+    fifoLog(logBuffer);
 }
 
-void handle_assign_group(RestaurantState* state,const ClientRequest& req) {
+void handleAssignGroup(RestaurantState* state, const ClientRequest& req) {
     char logBuffer[256];
 
-    // ===== 1. sprawdzenie miejsca w lokalu =====
     P(SEM_MUTEX_STATE);
     int freeSeats = TOTAL_SEATS - state->currentGuestCount;
     V(SEM_MUTEX_STATE);
 
-    // ===== 2. brak stolika → kolejka albo odrzucenie =====
     if (freeSeats < req.groupSize) {
-        handle_queue_group(req);
+        handleQueueGroup(req);
         return;
     }
 
-    // ===== 3. próba przydziału stolika =====
-    int assignedTable = assign_table(state, req.vipStatus, req.groupSize, req.groupID, req.pid);
+    int assignedTable = assignTable(state, req.vipStatus, req.groupSize, req.groupID, req.pid);
 
     if (assignedTable != -1) {
         snprintf(logBuffer, sizeof(logBuffer),
             "\033[32m[%ld] [SERVICE]: TABLE ASSIGNED | table=%d pid=%d groupID=%d size=%d vip=%d\033[0m",
-            time(NULL), assignedTable, req.pid, req.groupID, req.groupSize, req.vipStatus
-        );
-        fifo_log(logBuffer);
+            time(NULL), assignedTable, req.pid, req.groupID, req.groupSize, req.vipStatus);
+        fifoLog(logBuffer);
 
         ServiceRequest assigned{};
         assigned.mtype = req.pid;
         assigned.type = REQ_GROUP_ASSIGNED;
         assigned.extraData = assignedTable;
 
-        queue_send_request(assigned);
+        queueSendRequest(assigned);
         return;
     }
 
-    // ===== 4. brak pasującego stolika =====
-    handle_queue_group(req);
+    handleQueueGroup(req);
 }
 
-void handle_group_finished(RestaurantState* state,const ClientRequest& req) {
+void handleGroupFinished(RestaurantState* state, const ClientRequest& req) {
     pid_t pid = req.pid;
     const int* eatenCount = req.eatenCount;
 
@@ -166,25 +152,22 @@ void handle_group_finished(RestaurantState* state,const ClientRequest& req) {
         Table& t = state->tables[i];
 
         for (int s = 0; s < MAX_TABLE_SLOTS; ++s) {
-            if (t.slots[s].pid != pid)
-                continue;
+            if (t.slots[s].pid != pid) continue;
 
             int groupID = req.groupID;
             int size = t.slots[s].size;
             bool vip = t.slots[s].vipStatus;
 
-            clean_zombie_dishes(state, groupID);
+            cleanZombieDishes(state, groupID);
 
-            for (int i = 0; i < COLOR_COUNT; ++i) {
-                if (eatenCount[i] == 0) continue;
-
-                colors c = colorFromIndex(i);
-                int price = priceForColor(c);
-                int total_price = 
-
-                state->soldCount[i] += eatenCount[i];
-                state->soldValue[i] += eatenCount[i] * price;
-                state->revenue += state->soldValue[i];
+            // Count total dishes eaten for logging (already tracked in shared memory)
+            int groupDishes = 0;
+            int groupRevenue = 0;
+            for (int j = 0; j < COLOR_COUNT; ++j) {
+                if (eatenCount[j] > 0) {
+                    groupDishes += eatenCount[j];
+                    groupRevenue += eatenCount[j] * priceForColor(colorFromIndex(j));
+                }
             }
 
             t.slots[s].pid = -1;
@@ -193,12 +176,15 @@ void handle_group_finished(RestaurantState* state,const ClientRequest& req) {
 
             t.occupiedSeats -= size;
             state->currentGuestCount -= size;
-            if (vip)
-                state->currentVIPCount--;
+            if (vip) state->currentVIPCount--;
 
-            // jeżeli stolik całkowicie pusty → zwalniamy zasób
-            if (t.occupiedSeats == 0)
-                V(SEM_TABLES);
+            if (t.occupiedSeats == 0) V(SEM_TABLES);
+
+            char logBuffer[256];
+            snprintf(logBuffer, sizeof(logBuffer),
+                "\033[38;5;118m[%ld] [SERVICE]: GROUP PAID OFF | groupID=%d pid=%d dishes=%d totalPrice=%d\033[0m",
+                time(NULL), groupID, pid, groupDishes, groupRevenue);
+            fifoLog(logBuffer);
 
             V(SEM_MUTEX_BELT);
             V(SEM_MUTEX_STATE);
@@ -210,49 +196,29 @@ void handle_group_finished(RestaurantState* state,const ClientRequest& req) {
     V(SEM_MUTEX_STATE);
 }
 
+void startService() {
+    fifoOpenWrite();
 
-void start_service() {
-    fifo_open_write();
+    clientQid = connectQueue(CLIENT_REQ_QUEUE);
+    serviceQid = connectQueue(SERVICE_REQ_QUEUE);
 
-    client_qid = connect_queue(CLIENT_REQ_QUEUE);
-    service_qid = connect_queue(SERVICE_REQ_QUEUE);
-
-    RestaurantState* state = get_state();
+    RestaurantState* state = getState();
 
     while (!terminate_flag && !evacuate_flag) {
-        // Blokujące odbieranie komunikatu od grupy
         ClientRequest req{};
-        queue_recv_request(req);  // blokuje, dopóki nie przyjdzie komunikat
+        queueRecvRequest(req);
 
-        // Obsługa komunikatu wg typu
         switch (req.type) {
         case REQ_ASSIGN_GROUP:
-            handle_assign_group(state, req);
+            handleAssignGroup(state, req);
             break;
         case REQ_GROUP_FINISHED:
-            handle_group_finished(state, req);
+            handleGroupFinished(state, req);
             break;
         default:
-            // nieznany typ, ignorujemy lub logujemy
             break;
         }
-
-        //assign_tables(state);  // przydzielanie stolików
     }
 
-    fifo_close_write();
-}
-
-
-
-
-static int check_close_signal() {
-    char buf[32];
-    int fd = open(CLOSE_FIFO, O_RDONLY | O_NONBLOCK);
-    if (fd == -1) return 0;
-    int ret = read(fd, buf, sizeof(buf));
-    close(fd);
-    if (ret > 0 && strcmp(buf, "CLOSE_RESTAURANT") == 0)
-        return 1;
-    return 0;
+    fifoCloseWrite();
 }

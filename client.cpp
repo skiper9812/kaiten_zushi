@@ -4,47 +4,82 @@
 #define ASSIGN 1
 #define CONSUME 2
 #define FINISHED 3
+int parent = 1;
 
-// ===== statyczne pola Group =====
-int Group::nextGroupID = 0;
-
-// ===== Handlery =====
-
-static void reap_children() {
-    for (;;) {
-        pid_t pid = waitpid(-1, NULL, WNOHANG);
-        if (pid <= 0)
-            break;
-    }
+static void evacuationHandler(int sig) {
+    evacuate_flag = 1;
 }
 
-static void handle_create_group() {
+static void terminateHandler(int sig) {
+    terminate_flag = 1;
+}
+
+int Group::nextGroupID = 0;
+
+static void* reaperThread(void* arg) {
+    while (!terminate_flag && !evacuate_flag) {
+        int status;
+        pid_t pid = wait(&status);
+        if (pid == -1) {
+            if (errno == ECHILD) break;
+            if (errno == EINTR) continue;
+        }
+    }
+    return nullptr;
+}
+
+// Check if restaurant is closing (TP->TK time elapsed)
+static bool isClosingTime() {
+    RestaurantState* s = getState();
+    if (s == nullptr) return false;
+    return (time(NULL) - s->startTime) >= SIMULATION_DURATION_SECONDS;
+}
+
+static void handleCreateGroup() {
+    // Don't create new groups if closing time
+    if (isClosingTime() || terminate_flag || evacuate_flag) {
+        return;
+    }
+
     Group g;
     pid_t pid = fork();
     if (pid == 0) {
-        group_loop(g);
+        parent = 0;
+        struct sigaction sa = { 0 };
+        sa.sa_handler = evacuationHandler;
+        sigemptyset(&sa.sa_mask);
+        sa.sa_flags &= ~SA_RESTART;
+        sigaction(SIGTERM, &sa, NULL);
+
+        struct sigaction saInt = { 0 };
+        saInt.sa_handler = terminateHandler;
+        sigemptyset(&saInt.sa_mask);
+        saInt.sa_flags &= ~SA_RESTART;
+        sigaction(SIGINT, &saInt, NULL);
+
+        groupLoop(g);
         _exit(0);
     }
 }
 
-void handle_group_finished(const Group& g) {
+void handleGroupFinished(Group& g) {
     ClientRequest req{};
     req.mtype = FINISHED;
     req.type = REQ_GROUP_FINISHED;
     req.pid = getpid();
     req.groupID = g.getGroupID();
-    memcpy(req.eatenCount, g.getEatenCount(), sizeof(req.eatenCount));
+    g.getEatenCount(req.eatenCount);
 
-    queue_send_request(req);
+    queueSendRequest(req);
 
     char buf[256];
     snprintf(buf, sizeof(buf),
         "\033[38;5;118m[%ld] [CLIENTS] GROUP FINISHED | groupID=%d pid=%d\033[0m",
         time(NULL), g.getGroupID(), getpid());
-    fifo_log(buf);
+    fifoLog(buf);
 }
 
-static void handle_get_group(const Group& g) {
+static void handleGetGroup(Group& g) {
     ClientResponse resp{};
 
     resp.mtype = getpid();
@@ -56,10 +91,11 @@ static void handle_get_group(const Group& g) {
     resp.vipStatus = g.getVipStatus();
     resp.dishesToEat = g.getDishesToEat();
 
-    queue_send_response(resp);
+    queueSendResponse(resp);
 }
 
-static void handle_reject_group(const Group& g) {
+static void handleRejectGroup(Group& g) {
+    handleGroupFinished(g);
     char logBuffer[256];
 
     snprintf(logBuffer, sizeof(logBuffer),
@@ -67,58 +103,89 @@ static void handle_reject_group(const Group& g) {
         time(NULL), getpid(), g.getGroupID(), g.getGroupSize(), g.getVipStatus(), g.getDishesToEat()
     );
 
-    fifo_log(logBuffer);
+    fifoLog(logBuffer);
+    
     _exit(0);
 }
 
-void handle_table_assigned(Group& g, int tableIndex) {
+void handleTableAssigned(Group& g, int tableIndex) {
     g.setTableIndex(tableIndex);
 }
 
-void handle_consume_dish(Group& g) {
-    int tableIndex = g.getTableIndex();
+void handleConsumeDish(Group& g) {
+    if (evacuate_flag || terminate_flag)
+        return;
+
     int groupID = g.getGroupID();
     int dishID = 0;
+    int beltSlot = -1;
     colors color;
     int price = 0;
 
+    if (evacuate_flag || terminate_flag)
+        return;
+
+    P(SEM_BELT_ITEMS);
+    if (evacuate_flag || terminate_flag) {
+        V(SEM_BELT_ITEMS);
+        return;
+    }
+
     P(SEM_MUTEX_BELT);
 
-    Dish& d = state->belt[tableIndex];
+    // Search entire belt for a suitable dish (any generic or targeted to this group)
+    for (int i = 0; i < BELT_SIZE; ++i) {
+        Dish& d = state->belt[i];
+        if (d.dishID != 0 && (d.targetGroupID == -1 || d.targetGroupID == groupID)) {
+            g.consumeOneDish(d.color);
 
-    if (d.dishID != 0 && (d.targetGroupID == -1 || d.targetGroupID == groupID)) {
-        P(SEM_BELT_ITEMS);
+            dishID = d.dishID;
+            beltSlot = i;
+            color = d.color;
+            price = d.price;
 
-        g.consumeOneDish(d.color);
+            // IMMEDIATELY track consumed dish in shared memory (before process could be killed)
+            int colorIdx = colorToIndex(d.color);
+            state->soldCount[colorIdx]++;
+            state->soldValue[colorIdx] += d.price;
+            state->revenue += d.price;
 
-        dishID = d.dishID;
-        color = d.color;
-        price = d.price;
+            d.dishID = 0;
+            d.targetGroupID = -1;
 
-        // zdejmujemy z taśmy
-        d.dishID = 0;
-        d.targetGroupID = -1;
-        V(SEM_BELT_SLOTS);
+            V(SEM_BELT_SLOTS);
+            break;
+        }
+    }
+
+    // If no suitable dish was found, release the semaphore we took
+    if (dishID == 0) {
+        V(SEM_BELT_ITEMS);
     }
 
     V(SEM_MUTEX_BELT);
 
     if (dishID != 0) {
-        //usleep(200000 + rand() % 500000); // czas jedzenia
-
         char logBuffer[256];
-        snprintf(logBuffer, sizeof(logBuffer),
-            "\033[38;5;118m[%ld] [CLIENTS]: CONSUMED %d DISH | table=%d, groupID=%d, pid=%d, color=%s, price=%d, dishesToEat=%d\033[0m",
-            time(NULL), dishID, tableIndex, g.getGroupID(), getpid(),
-            colorToString(color), price, g.getDishesToEat());
-        fifo_log(logBuffer);
-    }
-    else {
-        //usleep(1000);
+        snprintf(
+            logBuffer,
+            sizeof(logBuffer),
+            "\033[38;5;118m[%ld] [CLIENTS]: CONSUMED DISH %d | beltSlot=%d groupID=%d pid=%d color=%s price=%d dishesToEat=%d\033[0m",
+            time(NULL),
+            dishID,
+            beltSlot,
+            groupID,
+            getpid(),
+            colorToString(color),
+            price,
+            g.getDishesToEat()
+        );
+        fifoLog(logBuffer);
     }
 }
 
-void* person_thread(void* arg) {
+
+void* personThread(void* arg) {
     PersonCtx* ctx = (PersonCtx*)arg;
     Group& g = *ctx->group;
 
@@ -128,8 +195,11 @@ void* person_thread(void* arg) {
     colors color;
     int price;
 
-    while (!g.isFinished() && !terminate_flag && !evacuate_flag) {
+    while (!terminate_flag && !evacuate_flag) {
         dishID = 0;
+
+        if (g.isFinished() && !terminate_flag && !evacuate_flag)
+            break;
 
         if (g.orderPremiumDish()) {
             PremiumRequest order;
@@ -137,26 +207,25 @@ void* person_thread(void* arg) {
             order.groupID = groupID;
             order.dish = rand() % 3 + 3;
 
-            queue_send_request(order);
+            queueSendRequest(order);
             
             char buf[256];
             snprintf(buf, sizeof(buf),
                 "\033[38;5;118m[%ld] [CLIENT] PERSON %d ordered %s premium dish | group=%d table=%d ordersLeft=%d\033[0m",
                 time(NULL), ctx->personID, colorToString(colorFromIndex(order.dish)), groupID, table, g.getOrdersLeft());
-            fifo_log(buf);
+            fifoLog(buf);
         }
 
-        handle_consume_dish(g);
+        handleConsumeDish(g);
     }
     return nullptr;
 }
 
-void group_loop(Group& g) {
-    client_qid = connect_queue(CLIENT_REQ_QUEUE);
-    service_qid = connect_queue(SERVICE_REQ_QUEUE);
-    premium_qid = connect_queue(PREMIUM_REQ_QUEUE);
+void groupLoop(Group& g) {
+    clientQid = connectQueue(CLIENT_REQ_QUEUE);
+    serviceQid = connectQueue(SERVICE_REQ_QUEUE);
+    premiumQid = connectQueue(PREMIUM_REQ_QUEUE);
 
-    // ===== zgłoszenie grupy =====
     ClientRequest req{};
     req.mtype = ASSIGN;
     req.type = REQ_ASSIGN_GROUP;
@@ -168,71 +237,71 @@ void group_loop(Group& g) {
     req.vipStatus = g.getVipStatus();
     memset(req.eatenCount, 0, sizeof(req.eatenCount));
 
-    queue_send_request(req);
+    queueSendRequest(req);
 
     char buf[256];
     snprintf(buf, sizeof(buf),
         "\033[38;5;118m[%ld] [CLIENTS] GROUP CREATED | id=%d pid=%d size=%d dishesToEat=%d ordersLeft=%d vipStatus=%d\033[0m",
         time(NULL), g.getGroupID(), getpid(), g.getGroupSize(), g.getDishesToEat(), g.getOrdersLeft(), g.getVipStatus());
-    fifo_log(buf);
+    fifoLog(buf);
 
-    // ===== oczekiwanie na stolik =====
     while (!terminate_flag && !evacuate_flag) {
         ServiceRequest resp{};
-        queue_recv_request(resp, getpid());
+        queueRecvRequest(resp, getpid());
 
         if (resp.type == REQ_GROUP_ASSIGNED) {
             g.setTableIndex(resp.extraData);
             break;
         }
 
-        if (resp.type == REQ_GROUP_REJECT || evacuate_flag)
-            handle_reject_group(g);
+        if (resp.type == REQ_GROUP_REJECT)
+            handleRejectGroup(g);
     }
 
-    // ===== start wątków =====
     int n = g.getGroupSize();
     pthread_t threads[n];
     PersonCtx ctx[n];
 
     for (int i = 0; i < n; ++i) {
         ctx[i] = { &g, i };
-        pthread_create(&threads[i], nullptr, person_thread, &ctx[i]);
+        pthread_create(&threads[i], nullptr, personThread, &ctx[i]);
     }
 
     for (int i = 0; i < n; ++i)
         pthread_join(threads[i], nullptr);
 
-    handle_group_finished(g);
+    handleGroupFinished(g);
     _exit(0);
 }
 
 // =====================================================
-// GŁÓWNA PĘTLA CLIENT
+// MAIN CLIENT LOOP
 // =====================================================
 
-void start_clients() {
-    fifo_open_write();
-    RestaurantState* state = get_state();
+void startClients() {
+    fifoOpenWrite();
+    RestaurantState* state = getState();
+
+    pthread_t reaper;
+    pthread_create(&reaper, nullptr, reaperThread, nullptr);
 
     while (!terminate_flag && !evacuate_flag) {
-        // losowy odstęp czasowy między przyjściem grup
-        sleep(rand() % 3);
-
-        reap_children();
-
-        handle_create_group();
-
-        // Opcjonalnie log lub inne czynności w przerwie między generowaniem
-    }
-
-    for (;;) {
-        pid_t pid = wait(NULL); // dowolny potomek
-        if (pid == -1) {
-            if (errno == EINTR) continue;
-            if (errno == ECHILD) break; // nie ma dzieci
+        // Check for closing time
+        if (isClosingTime()) {
+            char buf[128];
+            snprintf(buf, sizeof(buf),
+                "\033[33m[%ld] [CLIENTS]: CLOSING TIME - no more groups accepted\033[0m",
+                time(NULL));
+            fifoLog(buf);
+            break;
         }
+
+        SIM_SLEEP(rand() % 100000);
+        handleCreateGroup();
     }
 
-    fifo_close_write();
+    // Wait for all existing groups to finish
+    pthread_join(reaper, nullptr);
+
+    fifoCloseWrite();
 }

@@ -1,6 +1,6 @@
-#pragma once
-#include "common.h"
+﻿#pragma once
 #include "ipc_manager.h"
 
-void send_close_signal();
-void start_manager();
+void startManager();
+void handleManagerSignal(int sig);
+void sendCloseSignal();
