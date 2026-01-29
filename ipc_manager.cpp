@@ -121,7 +121,7 @@ bool queueRecv(int qid, int semItems, int semFree,
             return false;
         
         // Always use IPC_NOWAIT to avoid indefinite blocking
-        ssize_t ret = msgrcv(qid, &msg, sizeof(T) - sizeof(long), mtype, baseFlags | IPC_NOWAIT);
+        ssize_t ret = msgrcv(qid, &msg, sizeof(T) - sizeof(long), mtype, baseFlags);
 
         if (ret >= 0) {
             V(semFree);

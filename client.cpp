@@ -6,12 +6,11 @@
 #define FINISHED 3
 int parent = 1;
 
-static void evacuationHandler(int sig) {
-    evacuate_flag = 1;
-}
-
-static void terminateHandler(int sig) {
+// Unified signal handler for group child processes
+// Both signals should trigger graceful shutdown with FINISHED logging
+static void groupSignalHandler(int sig) {
     terminate_flag = 1;
+    evacuate_flag = 1;
 }
 
 int Group::nextGroupID = 0;
@@ -19,22 +18,15 @@ int Group::nextGroupID = 0;
 static void* reaperThread(void* arg) {
     while (true) {
         int status;
-        // Use WNOHANG after flags set to check for remaining children without blocking forever
-        int options = (terminate_flag || evacuate_flag) ? WNOHANG : 0;
-        pid_t pid = waitpid(-1, &status, options);
+        // Always use blocking wait - faster cleanup than polling with WNOHANG
+        pid_t pid = waitpid(-1, &status, 0);
         
         if (pid == -1) {
             if (errno == ECHILD) break;  // No more children - done
-            if (errno == EINTR) continue;  // Interrupted, retry
+            if (errno == EINTR) continue;  // Interrupted by signal, retry
             break;  // Other error
         }
-        
-        if (pid == 0) {
-            // WNOHANG returned with no children exited yet
-            SIM_SLEEP(10000);  // Wait 10ms and check again
-            continue;
-        }
-        // Child reaped, continue checking for more
+        // Child reaped successfully, continue to next
     }
     return nullptr;
 }
@@ -52,42 +44,56 @@ static void handleCreateGroup() {
         return;
     }
 
+    // Block SIGTERM during fork to prevent race condition
+    sigset_t blockSet, oldSet;
+    sigemptyset(&blockSet);
+    sigaddset(&blockSet, SIGTERM);
+    sigprocmask(SIG_BLOCK, &blockSet, &oldSet);
+
     Group g;
     pid_t pid = fork();
     if (pid == 0) {
         parent = 0;
+        // Ignore SIGINT - main process will propagate as SIGTERM
+        signal(SIGINT, SIG_IGN);
+        
+        // Handle SIGTERM for graceful shutdown
         struct sigaction sa = { 0 };
-        sa.sa_handler = evacuationHandler;
+        sa.sa_handler = groupSignalHandler;
         sigemptyset(&sa.sa_mask);
         sa.sa_flags &= ~SA_RESTART;
         sigaction(SIGTERM, &sa, NULL);
-
-        struct sigaction saInt = { 0 };
-        saInt.sa_handler = terminateHandler;
-        sigemptyset(&saInt.sa_mask);
-        saInt.sa_flags &= ~SA_RESTART;
-        sigaction(SIGINT, &saInt, NULL);
+        
+        // Now unblock SIGTERM - handler is ready
+        sigprocmask(SIG_SETMASK, &oldSet, NULL);
 
         groupLoop(g);
         _exit(0);
     }
+    
+    // Parent: restore signal mask
+    sigprocmask(SIG_SETMASK, &oldSet, NULL);
 }
 
-void handleGroupFinished(Group& g) {
+void handleGroupFinished(Group& g, bool wasSeated) {
+    // Always log FINISHED for all groups
+    char buf[256];
+    snprintf(buf, sizeof(buf),
+        "\033[38;5;118m[%ld] [CLIENTS] GROUP FINISHED | groupID=%d pid=%d wasSeated=%d\033[0m",
+        time(NULL), g.getGroupID(), getpid(), wasSeated);
+    fifoLog(buf);
+
+    // Only send cleanup request to service if we had a table
+    if (!wasSeated)
+        return;
+
     ClientRequest req{};
     req.mtype = FINISHED;
     req.type = REQ_GROUP_FINISHED;
     req.pid = getpid();
     req.groupID = g.getGroupID();
     g.getEatenCount(req.eatenCount);
-
     queueSendRequest(req);
-
-    char buf[256];
-    snprintf(buf, sizeof(buf),
-        "\033[38;5;118m[%ld] [CLIENTS] GROUP FINISHED | groupID=%d pid=%d\033[0m",
-        time(NULL), g.getGroupID(), getpid());
-    fifoLog(buf);
 }
 
 static void handleGetGroup(Group& g) {
@@ -106,16 +112,15 @@ static void handleGetGroup(Group& g) {
 }
 
 static void handleRejectGroup(Group& g) {
-    handleGroupFinished(g);
     char logBuffer[256];
 
     snprintf(logBuffer, sizeof(logBuffer),
         "\033[38;5;118m[%ld] [CLIENTS]: GROUP REJECTED pid=%d groupID=%d size=%d vip=%d dishes=%d\033[0m",
         time(NULL), getpid(), g.getGroupID(), g.getGroupSize(), g.getVipStatus(), g.getDishesToEat()
     );
-
     fifoLog(logBuffer);
-    
+
+    handleGroupFinished(g, false);
     _exit(0);
 }
 
@@ -263,12 +268,15 @@ void groupLoop(Group& g) {
         time(NULL), g.getGroupID(), getpid(), g.getGroupSize(), g.getDishesToEat(), g.getOrdersLeft(), g.getVipStatus());
     fifoLog(buf);
 
+    bool wasSeated = false;
+
     while (!terminate_flag && !evacuate_flag) {
         ServiceRequest resp{};
         queueRecvRequest(resp, getpid());
 
         if (resp.type == REQ_GROUP_ASSIGNED) {
             g.setTableIndex(resp.extraData);
+            wasSeated = true;
             break;
         }
 
@@ -276,19 +284,22 @@ void groupLoop(Group& g) {
             handleRejectGroup(g);
     }
 
-    int n = g.getGroupSize();
-    pthread_t threads[n];
-    PersonCtx ctx[n];
+    // Only create person threads if we got a table
+    if (wasSeated) {
+        int n = g.getGroupSize();
+        pthread_t threads[n];
+        PersonCtx ctx[n];
 
-    for (int i = 0; i < n; ++i) {
-        ctx[i] = { &g, i };
-        pthread_create(&threads[i], nullptr, personThread, &ctx[i]);
+        for (int i = 0; i < n; ++i) {
+            ctx[i] = { &g, i };
+            pthread_create(&threads[i], nullptr, personThread, &ctx[i]);
+        }
+
+        for (int i = 0; i < n; ++i)
+            pthread_join(threads[i], nullptr);
     }
 
-    for (int i = 0; i < n; ++i)
-        pthread_join(threads[i], nullptr);
-
-    handleGroupFinished(g);
+    handleGroupFinished(g, wasSeated);
     _exit(0);
 }
 
@@ -318,6 +329,16 @@ void startClients() {
         handleCreateGroup();
     }
 
+
+    // Rebroadcast SIGTERM to ensure all children (including those born during signal race) get it
+    // Block SIGTERM for self first to avoid recursion/premature death
+    sigset_t set;
+    sigemptyset(&set);
+    sigaddset(&set, SIGTERM);
+    sigprocmask(SIG_BLOCK, &set, NULL);
+    
+    kill(0, SIGTERM);  // Send to process group (children)
+    
     // Wait for all existing groups to finish
     pthread_join(reaper, nullptr);
 

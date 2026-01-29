@@ -30,6 +30,10 @@ int main() {
     sigemptyset(&sa.sa_mask);
     sa.sa_flags &= ~SA_RESTART;
     sigaction(SIGTERM, &sa, NULL);
+    
+    // Ignore SIGPIPE globally - prevent crash if logging fails
+    signal(SIGPIPE, SIG_IGN);
+    
     srand(time(0));
 
     CHECK_ERR(ipcInit(), ERR_IPC_INIT, "IPC initialization");
@@ -39,36 +43,43 @@ int main() {
 
     pid_t loggerPid = fork();
     if (loggerPid == 0) {
+        signal(SIGINT, SIG_IGN);  // Children ignore SIGINT, main propagates as SIGTERM
+        signal(SIGTERM, SIG_IGN); // Logger ignores SIGTERM - exits only when pipe is closed (EOF)
         loggerLoop("logs/simulation.log");
         _exit(0);
     }
 
     pid_t managerPid = fork();
     if (managerPid == 0) {
+        signal(SIGINT, SIG_IGN);
         startManager();
         _exit(0);
     }
 
     pid_t beltPid = fork();
     if (beltPid == 0) {
+        signal(SIGINT, SIG_IGN);
         startBelt();
         _exit(0);
     }
 
     pid_t chefPid = fork();
     if (chefPid == 0) {
+        signal(SIGINT, SIG_IGN);
         startChef();
         _exit(0);
     }
 
     pid_t servicePid = fork();
     if (servicePid == 0) {
+        signal(SIGINT, SIG_IGN);
         startService();
         _exit(0);
     }
 
     pid_t clientPid = fork();
     if (clientPid == 0) {
+        signal(SIGINT, SIG_IGN);
         startClients();
         _exit(0);
     }
