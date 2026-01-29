@@ -8,6 +8,8 @@
 #define CLIENT_REQ_QUEUE 'X'
 #define SERVICE_REQ_QUEUE 'Y'
 #define PREMIUM_REQ_QUEUE 'Z'
+// Pause Monitor
+void startPauseMonitor();
 #define MAX_MSG_TEXT 128
 
 extern int clientQid;

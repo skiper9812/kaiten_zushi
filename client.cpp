@@ -35,7 +35,11 @@ static void* reaperThread(void* arg) {
 static bool isClosingTime() {
     RestaurantState* s = getState();
     if (s == nullptr) return false;
-    return (time(NULL) - s->startTime) >= SIMULATION_DURATION_SECONDS;
+    
+    long elapsed = time(NULL) - s->startTime;
+    long pauseSec = s->totalPauseNanoseconds / 1000000000LL;
+    
+    return (elapsed - pauseSec) >= SIMULATION_DURATION_SECONDS;
 }
 
 static void handleCreateGroup() {

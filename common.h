@@ -15,6 +15,7 @@
 #include <errno.h>
 #include <string.h>
 #include <time.h>
+#include <pthread.h>
 
 // =====================================================
 // SIMULATION CONTROL
@@ -30,7 +31,7 @@
 #endif
 
 // Simulation duration in seconds (maps to TP->TK restaurant hours)
-#define SIMULATION_DURATION_SECONDS 60
+#define SIMULATION_DURATION_SECONDS 10
 
 // Opening and closing hours (for display/logging purposes)
 #define TP 12
@@ -127,6 +128,7 @@ struct RestaurantState {
     int nextDishID;
 
     time_t startTime;
+    long long totalPauseNanoseconds;
 
     Table tables[TABLE_COUNT];
     Dish belt[BELT_SIZE];

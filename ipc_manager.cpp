@@ -441,6 +441,7 @@ int ipcInit() {
     fifoInitCloseSignal();
     memset(state, 0, sizeof(RestaurantState));
     state->startTime = time(NULL);
+    state->totalPauseNanoseconds = 0;
 
     return 0;
 }
@@ -462,4 +463,61 @@ void ipcCleanup() {
 
     unlink(FIFO_PATH);
     unlink(CLOSE_FIFO);
+}
+
+/* ---------- PAUSE MONITOR ---------- */
+
+static void monitorSigcontHandler(int sig) {
+    // SIGCONT just resumes execution, but might not interrupt pause() reliably w/o SA_RESTART quirks.
+    // Raise SIGUSR1 to definitely interrupt pause() in this thread.
+    //raise(SIGUSR1);
+}
+
+static void* pauseMonitorThread(void* arg) {
+    // Unblock SIGCONT and SIGUSR1 only in this thread
+    sigset_t set;
+    sigemptyset(&set);
+    sigaddset(&set, SIGCONT);
+    pthread_sigmask(SIG_UNBLOCK, &set, NULL);
+
+    // Register handlers
+    struct sigaction sa = { 0 };
+
+    sa.sa_handler = monitorSigcontHandler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGCONT, &sa, NULL); // SIGCONT handler raises SIGUSR1
+
+    struct timespec t1, t2;
+
+    while (true) {
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        
+        // Wait for signal. 
+        // SIGSTOP freezes here. SIGCONT wakes up, runs handler -> raises SIGUSR1 -> interrupts pause()
+        pause(); 
+        
+        clock_gettime(CLOCK_MONOTONIC, &t2);
+        
+        long long ns = (t2.tv_sec - t1.tv_sec) * 1000000000LL + (t2.tv_nsec - t1.tv_nsec);
+        
+        // Filter small noise (>1ms considered real pause)
+        if (ns > 1000000)
+            if (state) state->totalPauseNanoseconds += ns;
+    }
+    return nullptr;
+}
+
+void startPauseMonitor() {
+    // Block SIGCONT in main thread so it's inherited blocked by future threads
+    // (though main thread itself shouldn't handle SIGCONT)
+    sigset_t sigcontSet;
+    sigemptyset(&sigcontSet);
+    sigaddset(&sigcontSet, SIGCONT);
+    pthread_sigmask(SIG_BLOCK, &sigcontSet, NULL);
+
+    pthread_t monitorThread;
+    if (pthread_create(&monitorThread, NULL, pauseMonitorThread, NULL) != 0) {
+        perror("Failed to create monitor thread");
+    }
 }
