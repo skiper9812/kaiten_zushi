@@ -51,6 +51,7 @@ int main() {
     // --- Spawn Subprocesses ---
 
     pid_t loggerPid = fork();
+    if (CHECK_ERR(loggerPid, ERR_IPC_INIT, "fork logger") == ERR_DECISION_FATAL) exit(1);
     if (loggerPid == 0) {
         signal(SIGINT, SIG_IGN); 
         signal(SIGTERM, SIG_IGN);
@@ -59,6 +60,7 @@ int main() {
     }
 
     pid_t managerPid = fork();
+    if (CHECK_ERR(managerPid, ERR_IPC_INIT, "fork manager") == ERR_DECISION_FATAL) { kill(0, SIGTERM); exit(1); }
     if (managerPid == 0) {
         signal(SIGINT, SIG_IGN);
         startManager();
@@ -66,6 +68,7 @@ int main() {
     }
 
     pid_t beltPid = fork();
+    if (CHECK_ERR(beltPid, ERR_IPC_INIT, "fork belt") == ERR_DECISION_FATAL) { kill(0, SIGTERM); exit(1); }
     if (beltPid == 0) {
         signal(SIGINT, SIG_IGN);
         startBelt();
@@ -73,6 +76,7 @@ int main() {
     }
 
     pid_t chefPid = fork();
+    if (CHECK_ERR(chefPid, ERR_IPC_INIT, "fork chef") == ERR_DECISION_FATAL) { kill(0, SIGTERM); exit(1); }
     if (chefPid == 0) {
         signal(SIGINT, SIG_IGN);
         startChef();
@@ -80,6 +84,7 @@ int main() {
     }
 
     pid_t servicePid = fork();
+    if (CHECK_ERR(servicePid, ERR_IPC_INIT, "fork service") == ERR_DECISION_FATAL) { kill(0, SIGTERM); exit(1); }
     if (servicePid == 0) {
         signal(SIGINT, SIG_IGN);
         startService();
@@ -87,6 +92,7 @@ int main() {
     }
 
     pid_t clientPid = fork();
+    if (CHECK_ERR(clientPid, ERR_IPC_INIT, "fork clients") == ERR_DECISION_FATAL) { kill(0, SIGTERM); exit(1); }
     if (clientPid == 0) {
         signal(SIGINT, SIG_IGN);
         signal(SIGUSR1, SIG_IGN);

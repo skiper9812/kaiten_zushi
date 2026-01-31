@@ -377,47 +377,44 @@ Poniżej znajdują się odniesienia do plików źródłowych demonstrujące uży
 Link do repozytorium (commit `40d612d`): [https://github.com/skiper9812/kaiten_zushi/blob/40d612defe71f17ec8dad6174f7e5bb6a4289566/](https://github.com/skiper9812/kaiten_zushi/blob/40d612defe71f17ec8dad6174f7e5bb6a4289566/)
 
 ### a. Tworzenie i obsługa plików
-*   [open()](https://github.com/skiper9812/kaiten_zushi/blob/40d612defe71f17ec8dad6174f7e5bb6a4289566/ipc_manager.cpp#L235): Otwarcie FIFO do zapisu.
-*   [open()](https://github.com/skiper9812/kaiten_zushi/blob/40d612defe71f17ec8dad6174f7e5bb6a4289566/ipc_manager.cpp#L269): Otwarcie FIFO do odczytu.
-*   [write()](https://github.com/skiper9812/kaiten_zushi/blob/40d612defe71f17ec8dad6174f7e5bb6a4289566/ipc_manager.cpp#L257): Zapis logów do FIFO.
-*   [close()](https://github.com/skiper9812/kaiten_zushi/blob/40d612defe71f17ec8dad6174f7e5bb6a4289566/ipc_manager.cpp#L242): Zamknięcie deskryptora pliku.
-*   [mkfifo()](https://github.com/skiper9812/kaiten_zushi/blob/40d612defe71f17ec8dad6174f7e5bb6a4289566/ipc_manager.cpp#L223): Tworzenie łącza nazwanego.
-*   [unlink()](https://github.com/skiper9812/kaiten_zushi/blob/40d612defe71f17ec8dad6174f7e5bb6a4289566/ipc_manager.cpp#L462): Usuwanie plików FIFO.
+*   [open()](https://github.com/skiper9812/kaiten_zushi/blob/40d612defe71f17ec8dad6174f7e5bb6a4289566/ipc_manager.cpp#L245): Otwarcie FIFO do zapisu.
+*   [write()](https://github.com/skiper9812/kaiten_zushi/blob/40d612defe71f17ec8dad6174f7e5bb6a4289566/ipc_manager.cpp#L269): Zapis logów do FIFO.
+*   [close()](https://github.com/skiper9812/kaiten_zushi/blob/40d612defe71f17ec8dad6174f7e5bb6a4289566/ipc_manager.cpp#L252): Zamknięcie deskryptora pliku.
+*   [unlink()](https://github.com/skiper9812/kaiten_zushi/blob/40d612defe71f17ec8dad6174f7e5bb6a4289566/ipc_manager.cpp#L502): Usuwanie plików FIFO.
 
 ### b. Tworzenie procesów
-*   [fork()](https://github.com/skiper9812/kaiten_zushi/blob/40d612defe71f17ec8dad6174f7e5bb6a4289566/main.cpp#L47): Tworzenie głównych modułów (Manager, Chef, Belt, etc.).
-*   [fork()](https://github.com/skiper9812/kaiten_zushi/blob/40d612defe71f17ec8dad6174f7e5bb6a4289566/client.cpp#L65): Tworzenie procesów grup klientów.
-*   [_exit()](https://github.com/skiper9812/kaiten_zushi/blob/40d612defe71f17ec8dad6174f7e5bb6a4289566/client.cpp#L84): Bezpieczne wyjście z procesu potomnego.
-*   [wait()](https://github.com/skiper9812/kaiten_zushi/blob/40d612defe71f17ec8dad6174f7e5bb6a4289566/main.cpp#L93): Oczekiwanie na procesy potomne w Main.
-*   [waitpid()](https://github.com/skiper9812/kaiten_zushi/blob/40d612defe71f17ec8dad6174f7e5bb6a4289566/client.cpp#L27): Reaper Thread sprzątający procesy-dzieci.
+*   [fork()](https://github.com/skiper9812/kaiten_zushi/blob/40d612defe71f17ec8dad6174f7e5bb6a4289566/client.cpp#L92): Tworzenie procesów grup klientów.
+*   [_exit()](https://github.com/skiper9812/kaiten_zushi/blob/40d612defe71f17ec8dad6174f7e5bb6a4289566/client.cpp#L115): Bezpieczne wyjście z procesu potomnego.
+*   [wait()](https://github.com/skiper9812/kaiten_zushi/blob/40d612defe71f17ec8dad6174f7e5bb6a4289566/main.cpp#L99): Oczekiwanie na procesy potomne w Main.
+*   [waitpid()](https://github.com/skiper9812/kaiten_zushi/blob/40d612defe71f17ec8dad6174f7e5bb6a4289566/client.cpp#L37): Reaper Thread sprzątający procesy-dzieci.
 
 ### c. Tworzenie i obsługa wątków
-*   [pthread_create()](https://github.com/skiper9812/kaiten_zushi/blob/40d612defe71f17ec8dad6174f7e5bb6a4289566/client.cpp#L368): Wątki reprezentujące pojedynczych klientów.
-*   [pthread_join()](https://github.com/skiper9812/kaiten_zushi/blob/40d612defe71f17ec8dad6174f7e5bb6a4289566/client.cpp#L372): Oczekiwanie na zakończenie wątków klientów.
-*   [pthread_sigmask()](https://github.com/skiper9812/kaiten_zushi/blob/40d612defe71f17ec8dad6174f7e5bb6a4289566/ipc_manager.cpp#L503): Maskowanie sygnałów w wątku monitora.
+*   [pthread_create()](https://github.com/skiper9812/kaiten_zushi/blob/40d612defe71f17ec8dad6174f7e5bb6a4289566/client.cpp#L422): Wątki reprezentujące pojedynczych klientów.
+*   [pthread_join()](https://github.com/skiper9812/kaiten_zushi/blob/40d612defe71f17ec8dad6174f7e5bb6a4289566/client.cpp#L426): Oczekiwanie na zakończenie wątków klientów.
+*   [pthread_sigmask()](https://github.com/skiper9812/kaiten_zushi/blob/40d612defe71f17ec8dad6174f7e5bb6a4289566/ipc_manager.cpp#L519): Maskowanie sygnałów w wątku monitora.
 
 ### d. Obsługa sygnałów
 *   [kill()](https://github.com/skiper9812/kaiten_zushi/blob/40d612defe71f17ec8dad6174f7e5bb6a4289566/main.cpp#L14): Propagacja SIGTERM do grupy procesów.
-*   [signal()](https://github.com/skiper9812/kaiten_zushi/blob/40d612defe71f17ec8dad6174f7e5bb6a4289566/main.cpp#L34): Ignorowanie SIGPIPE, SIGUSR.
+*   [signal()](https://github.com/skiper9812/kaiten_zushi/blob/40d612defe71f17ec8dad6174f7e5bb6a4289566/main.cpp#L35): Ignorowanie SIGPIPE, SIGUSR.
 *   [sigaction()](https://github.com/skiper9812/kaiten_zushi/blob/40d612defe71f17ec8dad6174f7e5bb6a4289566/main.cpp#L27): Rejestracja handlerów dla SIGINT/SIGTERM.
 
 ### e. Synchronizacja procesów (Semafore System V)
-*   [semget()](https://github.com/skiper9812/kaiten_zushi/blob/40d612defe71f17ec8dad6174f7e5bb6a4289566/ipc_manager.cpp#L408): Tworzenie zbioru semaforów.
-*   [semctl()](https://github.com/skiper9812/kaiten_zushi/blob/40d612defe71f17ec8dad6174f7e5bb6a4289566/ipc_manager.cpp#L298): Inicjalizacja wartości (SETVAL).
-*   [semop()](https://github.com/skiper9812/kaiten_zushi/blob/40d612defe71f17ec8dad6174f7e5bb6a4289566/ipc_manager.cpp#L346): Operacja V (podnoszenie).
-*   [semtimedop()](https://github.com/skiper9812/kaiten_zushi/blob/40d612defe71f17ec8dad6174f7e5bb6a4289566/ipc_manager.cpp#L316): Operacja P z timeoutem (waiting).
+*   [semget()](https://github.com/skiper9812/kaiten_zushi/blob/40d612defe71f17ec8dad6174f7e5bb6a4289566/ipc_manager.cpp#L441): Tworzenie zbioru semaforów.
+*   [semctl()](https://github.com/skiper9812/kaiten_zushi/blob/40d612defe71f17ec8dad6174f7e5bb6a4289566/ipc_manager.cpp#L445): Inicjalizacja wartości (SETVAL).
+*   [semop()](https://github.com/skiper9812/kaiten_zushi/blob/40d612defe71f17ec8dad6174f7e5bb6a4289566/ipc_manager.cpp#L363): Operacja V (podnoszenie).
+*   [semtimedop()](https://github.com/skiper9812/kaiten_zushi/blob/40d612defe71f17ec8dad6174f7e5bb6a4289566/ipc_manager.cpp#L332): Operacja P z timeoutem (waiting).
 
 ### f. Łącza nazwane (FIFO)
-*   [mkfifo()](https://github.com/skiper9812/kaiten_zushi/blob/40d612defe71f17ec8dad6174f7e5bb6a4289566/ipc_manager.cpp#L223): Inicjalizacja kanału logowania.
+*   [mkfifo()](https://github.com/skiper9812/kaiten_zushi/blob/40d612defe71f17ec8dad6174f7e5bb6a4289566/ipc_manager.cpp#L233): Inicjalizacja kanału logowania.
 
 ### g. Pamięć dzielona (Shared Memory System V)
-*   [shmget()](https://github.com/skiper9812/kaiten_zushi/blob/40d612defe71f17ec8dad6174f7e5bb6a4289566/ipc_manager.cpp#L402): Alokacja segmentu pamięci.
-*   [shmat()](https://github.com/skiper9812/kaiten_zushi/blob/40d612defe71f17ec8dad6174f7e5bb6a4289566/ipc_manager.cpp#L405): Dołączanie pamięci do przestrzeni adresowej procesu.
-*   [shmdt()](https://github.com/skiper9812/kaiten_zushi/blob/40d612defe71f17ec8dad6174f7e5bb6a4289566/ipc_manager.cpp#L454): Odłączanie pamięci.
-*   [shmctl()](https://github.com/skiper9812/kaiten_zushi/blob/40d612defe71f17ec8dad6174f7e5bb6a4289566/ipc_manager.cpp#L455): Usuwanie segmentu (IPC_RMID).
+*   [shmget()](https://github.com/skiper9812/kaiten_zushi/blob/40d612defe71f17ec8dad6174f7e5bb6a4289566/ipc_manager.cpp#L435): Alokacja segmentu pamięci.
+*   [shmat()](https://github.com/skiper9812/kaiten_zushi/blob/40d612defe71f17ec8dad6174f7e5bb6a4289566/ipc_manager.cpp#L438): Dołączanie pamięci do przestrzeni adresowej procesu.
+*   [shmdt()](https://github.com/skiper9812/kaiten_zushi/blob/40d612defe71f17ec8dad6174f7e5bb6a4289566/ipc_manager.cpp#L494): Odłączanie pamięci.
+*   [shmctl()](https://github.com/skiper9812/kaiten_zushi/blob/40d612defe71f17ec8dad6174f7e5bb6a4289566/ipc_manager.cpp#L495): Usuwanie segmentu (IPC_RMID).
 
 ### h. Kolejki komunikatów (Message Queues System V)
-*   [msgget()](https://github.com/skiper9812/kaiten_zushi/blob/40d612defe71f17ec8dad6174f7e5bb6a4289566/ipc_manager.cpp#L35): Tworzenie kolejki komunikatów.
-*   [msgsnd()](https://github.com/skiper9812/kaiten_zushi/blob/40d612defe71f17ec8dad6174f7e5bb6a4289566/ipc_manager.cpp#L82): Wysłanie komunikatu (non-blocking/retry w pętli).
-*   [msgrcv()](https://github.com/skiper9812/kaiten_zushi/blob/40d612defe71f17ec8dad6174f7e5bb6a4289566/ipc_manager.cpp#L116): Odbiór komunikatu.
-*   [msgctl()](https://github.com/skiper9812/kaiten_zushi/blob/40d612defe71f17ec8dad6174f7e5bb6a4289566/ipc_manager.cpp#L52): Usuwanie kolejki.
+*   [msgget()](https://github.com/skiper9812/kaiten_zushi/blob/40d612defe71f17ec8dad6174f7e5bb6a4289566/ipc_manager.cpp#L49): Tworzenie kolejki komunikatów.
+*   [msgsnd()](https://github.com/skiper9812/kaiten_zushi/blob/40d612defe71f17ec8dad6174f7e5bb6a4289566/ipc_manager.cpp#L88): Wysłanie komunikatu (non-blocking/retry w pętli).
+*   [msgrcv()](https://github.com/skiper9812/kaiten_zushi/blob/40d612defe71f17ec8dad6174f7e5bb6a4289566/ipc_manager.cpp#L123): Odbiór komunikatu.
+*   [msgctl()](https://github.com/skiper9812/kaiten_zushi/blob/40d612defe71f17ec8dad6174f7e5bb6a4289566/ipc_manager.cpp#L56): Usuwanie kolejki.

@@ -70,7 +70,7 @@ static bool handleCreateGroup() {
 
     Group g;
     pid_t pid = fork();
-    if (pid == -1) {
+    if (CHECK_ERR(pid, ERR_IPC_INIT, "fork group failed") != ERR_DECISION_IGNORE) {
         sigprocmask(SIG_SETMASK, &oldSet, NULL);
         return false;
     }
