@@ -18,13 +18,14 @@
 #include <pthread.h>
 #include "error_handler.h"
 
-// =====================================================
-// CONFIGURATION MACROS
-// =====================================================
+// ============================================================================
+// CONFIGURATION & CONSTANTS
+// ============================================================================
+
 #define FIFO_PATH "/tmp/restauracja_fifo"
 #define CLOSE_FIFO "/tmp/close_restaurant_fifo"
 
-// Set to 1 to skip all sleeps during testing
+// Enable to skip delays for faster testing
 #define SKIP_DELAYS 1
 
 #if SKIP_DELAYS
@@ -33,38 +34,28 @@
     #define SIM_SLEEP(us) usleep(us)
 #endif
 
-// Simulation duration in seconds (maps to TP->TK restaurant hours)
+// Base simulation duration in seconds (TP -> TK)
 #define SIMULATION_DURATION_SECONDS 10
 
-// Set to 1 to enable specific stress test: 5k clients wait, Chef fills belt, then clients enter
+// Test flags
 #define STRESS_TEST 0
-
-// Set to 1 (No Clean) or 2 (With Clean) to enable ZOMBIE_TEST
-// 1 client, 300 premium orders, eats 1, leaves.
 #define ZOMBIE_TEST 0
 #define PREDEFINED_ZOMBIE_TEST (ZOMBIE_TEST > 0)
 #if PREDEFINED_ZOMBIE_TEST
-    // Override duration for Zombie Test
 #undef SIMULATION_DURATION_SECONDS
 #define SIMULATION_DURATION_SECONDS 60
 #endif
 
-// Set to 1 to enable specific stress test: 5k clients wait, Chef fills belt, then clients enter
 #define CRITICAL_TEST 0
-
-// Set to specific number (>= 0) to generate exact number of groups. 
-// Set to -1 for random/infinite generation (until time ends).
-// Set to 1 to enable Table Sharing Test (X3/X4 only, Group Size 1-2)
 #define TABLE_SHARING_TEST 0
 
-// Set to specific number (>= 0) to generate exact number of groups. 
-// Set to -1 for random/infinite generation (until time ends).
+// Group generation limit (-1 for infinite)
 #define FIXED_GROUP_COUNT 1000
 
 #define MAX_QUEUE 1000
 #define BELT_SIZE 100
 
-// Table counts by size
+// Table configuration based on test mode
 #if TABLE_SHARING_TEST == 1
 #define X1 0
 #define X2 0
@@ -82,23 +73,28 @@
 #define X4 10
 #endif
 
-// Derived constants
 #define TOTAL_SEATS (X1 + 2 * X2 + 3 * X3 + 4 * X4)
 #define TABLE_COUNT (X1 + X2 + X3 + X4)
 #define COLOR_COUNT 6
 #define MAX_TABLE_SLOTS 4
 
+// ============================================================================
+// DATA STRUCTURES
+// ============================================================================
+
 typedef enum { WHITE = 0, YELLOW, GREEN, RED, BLUE, PURPLE } colors;
 
+// Helper to get price for a specific dish color
 static int priceForColor(colors c) {
     static const int prices[COLOR_COUNT] = { 10, 15, 20, 40, 50, 60 };
     return prices[c];
 }
 
+// Helper to stringify color enum
 static const char* colorToString(colors c) {
     static const char* names[COLOR_COUNT] = { "WHITE","YELLOW","GREEN","RED","BLUE","PURPLE" };
     return names[c];
-    }
+}
 
 static colors colorFromIndex(int idx) {
     static const colors map[COLOR_COUNT] = { WHITE, YELLOW, GREEN, RED, BLUE, PURPLE };
@@ -119,6 +115,7 @@ static int colorToIndex(colors c) {
 
 typedef enum { OPEN = 1, SLOW_MODE = 2, FAST_MODE = 3, CLOSED = 4 } restaurantMode;
 
+// Queue structure for Groups waiting for a table
 struct GroupQueue {
     int groupPid[MAX_QUEUE];
     int groupSize[MAX_QUEUE];
@@ -126,12 +123,14 @@ struct GroupQueue {
     int count;
 };
 
+// Represents a occupied slot at a table
 struct TableSlot {
     pid_t pid;
     int size;
     bool vipStatus;
 };
 
+// Represents a dining table
 struct Table {
     int tableID;
     int capacity;
@@ -139,11 +138,12 @@ struct Table {
     TableSlot slots[MAX_TABLE_SLOTS];
 };
 
+// Represents a dish on the conveyor belt
 struct Dish {
     int dishID;
     colors color;
     int price;
-    int targetGroupID;
+    int targetGroupID; // -1 if available for anyone
 };
 
 typedef enum {
@@ -154,17 +154,19 @@ typedef enum {
 
 class Group;
 
+// Shared Memory State Structure
+// Holds the entire state of the restaurant accessible by all processes
 struct RestaurantState {
     int restaurantMode;
     int simulationSpeed;
 
     int currentGuestCount;
     int currentVIPCount;
-    int totalGroupsCreated; // Tracks total groups successfully forked, for Barrier logic
+    int totalGroupsCreated; // For barrier synchronization
 
     int nextDishID;
 #if CRITICAL_TEST
-    int suicideTriggered; // Flag to ensure only one process triggers the random kill test
+    int suicideTriggered;
 #endif
 
     time_t startTime;
@@ -176,6 +178,7 @@ struct RestaurantState {
     GroupQueue normalQueue;
     GroupQueue vipQueue;
 
+    // Statistics
     int producedCount[COLOR_COUNT];
     int producedValue[COLOR_COUNT];
     int remainingCount[COLOR_COUNT];
@@ -184,35 +187,32 @@ struct RestaurantState {
     int wastedCount[COLOR_COUNT];
     int wastedValue[COLOR_COUNT];
     int revenue;
-    
-    int sigAccelerate;
-    int sigSlowdown;
-    int sigEvacuate;
 };
 
+// Semaphore Indices
 enum {
-    SEM_MUTEX_STATE = 0,
-    SEM_MUTEX_LOGS,
+    SEM_MUTEX_STATE = 0,    // Protects shared memory state
+    SEM_MUTEX_LOGS,         // Protects FIFO logging
 
-    SEM_MUTEX_BELT,
-    SEM_BELT_SLOTS,
-    SEM_BELT_ITEMS,
+    SEM_MUTEX_BELT,         // Protects belt array access
+    SEM_BELT_SLOTS,         // Counts empty slots on belt (Producer throttling)
+    SEM_BELT_ITEMS,         // Counts items on belt (Consumer indication)
 
-    SEM_TABLES,
-    SEM_CLIENT_FREE,
-    SEM_CLIENT_ITEMS,
+    SEM_TABLES,             // Counts free tables (currently used for general occupancy)
+    SEM_CLIENT_FREE,        // Throttles Client Process requests
+    SEM_CLIENT_ITEMS,       // Indicates requests for Client Process
 
-    SEM_SERVICE_FREE,
-    SEM_SERVICE_ITEMS,
+    SEM_SERVICE_FREE,       // Throttles Service Process requests
+    SEM_SERVICE_ITEMS,      // Indicates requests for Service Process
 
-    SEM_PREMIUM_FREE,
-    SEM_PREMIUM_ITEMS,
+    SEM_PREMIUM_FREE,       // Throttles Premium Chef requests
+    SEM_PREMIUM_ITEMS,      // Indicates requests for Chef Process
 
-    SEM_MUTEX_QUEUE,
-    SEM_QUEUE_FREE_VIP,
-    SEM_QUEUE_FREE_NORMAL,
-    SEM_QUEUE_USED_VIP,
-    SEM_QUEUE_USED_NORMAL,
+    SEM_MUTEX_QUEUE,        // Protects waiting queues
+    SEM_QUEUE_FREE_VIP,     // Throttles VIP admission (Backpressure)
+    SEM_QUEUE_FREE_NORMAL,  // Throttles Normal admission (Backpressure)
+    SEM_QUEUE_USED_VIP,     // (Legacy) could indicate used VIP slots
+    SEM_QUEUE_USED_NORMAL,  // (Legacy) could indicate used Normal slots
 
     SEM_COUNT
 };

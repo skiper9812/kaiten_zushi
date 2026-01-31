@@ -1,6 +1,7 @@
 ﻿#include "reports.h"
 #include "ipc_manager.h"
 
+// Prints the total production report (Chef)
 void printChefReport(RestaurantState* state) {
     printf("\n========== CHEF REPORT ==========\n");
     printf("Products produced:\n");
@@ -24,6 +25,7 @@ void printChefReport(RestaurantState* state) {
     printf("==================================\n\n");
 }
 
+// Prints the sales report (Cashier)
 void printCashierReport(RestaurantState* state) {
     printf("\n========== CASHIER REPORT ==========\n");
     printf("Products sold:\n");
@@ -47,6 +49,7 @@ void printCashierReport(RestaurantState* state) {
     printf("====================================\n\n");
 }
 
+// Prints items remaining on the belt
 void printServiceReport(RestaurantState* state) {
     printf("\n========== SERVICE REPORT ==========\n");
     printf("Products remaining on belt:\n");
@@ -81,6 +84,7 @@ void printServiceReport(RestaurantState* state) {
     printf("=====================================\n\n");
 }
 
+// Prints wasted items (abandoned on tables)
 void printWastedReport(RestaurantState* state) {
     printf("\n========== WASTED REPORT ==========\n");
     printf("Premium dishes removed (group finished early):\n");
@@ -108,6 +112,7 @@ void printWastedReport(RestaurantState* state) {
     printf("====================================\n\n");
 }
 
+// Orchestrates the printing of all final reports and performs data validation
 void printAllReports(RestaurantState* state) {
     printf("\n\n");
     printf("============================================================\n");
@@ -119,7 +124,7 @@ void printAllReports(RestaurantState* state) {
     printServiceReport(state);
     printWastedReport(state);
     
-    // Validation check
+    // Validation check: Conservation of Mass/Value
     int totalProduced = 0;
     int totalSold = 0;
     int totalRemaining = 0;
@@ -151,4 +156,3 @@ void printAllReports(RestaurantState* state) {
     }
     printf("=================================\n\n");
 }
-

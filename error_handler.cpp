@@ -7,7 +7,9 @@
 
 bool fatalError = 0;
 
+// Centralized error handler
 ErrorDecision handleError(ErrorCode code, const char* msg, int savedErrno) {
+    // If system is terminating, suppress errors to allow clean exit
     if (terminate_flag || evacuate_flag)
         return ERR_DECISION_IGNORE;
 
@@ -15,6 +17,7 @@ ErrorDecision handleError(ErrorCode code, const char* msg, int savedErrno) {
         code, msg,
         savedErrno ? strerror(savedErrno) : "no errno");
 
+    // Retry on interrupted system calls
     if (savedErrno == EINTR)
         return ERR_DECISION_RETRY;
 

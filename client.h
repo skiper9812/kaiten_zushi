@@ -3,10 +3,6 @@
 #include "common.h"
 #include <pthread.h>
 
-// =====================================================
-// Group - pure data object
-// =====================================================
-
 class Group {
 private:
     int groupID;
@@ -49,12 +45,10 @@ public:
         ordersLeft = rand() % dishesToEat;
         
 #if PREDEFINED_ZOMBIE_TEST
-        // Zombie Test: Order massive amount, eat only 1
-        // ONLY valid for first group (Zombie group)
         if (groupID == 0) {
             dishesToEat = 1;
-            ordersLeft = 100; // Match BELT_SIZE
-            groupSize = 1;    // Force single person
+            ordersLeft = 100;
+            groupSize = 1;
             adultCount = 1;
             childCount = 0;
         }
@@ -112,9 +106,9 @@ public:
         
 #if PREDEFINED_ZOMBIE_TEST
         if (groupID == 0)
-            orderPremium = true; // Always order in Zombie test (for Zombie group)
+            orderPremium = true;
         else
-            orderPremium = false; // Strictly forbid others in Zombie test
+            orderPremium = false;
 #endif
 
         pthread_mutex_lock(&mutex);
@@ -155,10 +149,6 @@ struct PersonCtx {
     Group* group;
     int personID;
 };
-
-// =====================================================
-// Client process API
-// =====================================================
 
 void startClients();
 void groupLoop(Group& g);

@@ -1,11 +1,11 @@
 ﻿#include "service.h"
 
+// Removes abandoned dishes from the belt if a group leaves prematurely
 static void cleanZombieDishes(RestaurantState* state, int groupID) {
     for (int i = 0; i < BELT_SIZE; ++i) {
         Dish& d = state->belt[i];
         if (d.dishID == 0) continue;
         if (d.targetGroupID == groupID) {
-            // Track wasted dish before removing
             int colorIdx = colorToIndex(d.color);
             state->wastedCount[colorIdx]++;
             state->wastedValue[colorIdx] += d.price;
@@ -17,10 +17,11 @@ static void cleanZombieDishes(RestaurantState* state, int groupID) {
     }
 }
 
-// Global static for file to track occupancy in zombie test mode
 static int zombieTestOccupancy = 0;
 static bool zombieGroupFinished = false;
 
+// Tries to find a suitable table for a group
+// Returns table index or -1 if none found
 int assignTable(RestaurantState* state, bool vipStatus, int groupSize, int groupID, pid_t pid) {
     for (int i = 0; i < TABLE_COUNT; ++i) {
         P(SEM_MUTEX_STATE);
@@ -37,6 +38,11 @@ int assignTable(RestaurantState* state, bool vipStatus, int groupSize, int group
             continue;
         }
 
+        // Logic check: Can we merge with existing occupants? 
+        // For simplicity: All groups at a table must be compatible (e.g., same size? No requirement in spec)
+        // Spec says: "Groups can share tables".
+        // Test IV: Mixing sizes. Ensure we don't start logical conflict.
+        
         int referenceSize = -1;
         bool compatible = true;
 
@@ -50,8 +56,10 @@ int assignTable(RestaurantState* state, bool vipStatus, int groupSize, int group
             }
         }
 
+#if TABLE_SHARING_TEST
         if (referenceSize != -1 && referenceSize != groupSize)
             compatible = false;
+#endif
 
         if (!compatible) {
             V(SEM_MUTEX_STATE);
@@ -78,7 +86,6 @@ int assignTable(RestaurantState* state, bool vipStatus, int groupSize, int group
     return -1;
 }
 
-// Helper to remove item from queue at index
 void removeQueueItem(GroupQueue& q, int index) {
     if (index < 0 || index >= q.count) return;
     for (int i = index; i < q.count - 1; ++i) {
@@ -89,6 +96,8 @@ void removeQueueItem(GroupQueue& q, int index) {
     q.count--;
 }
 
+// Attempts to assign waiting groups from the queue to tables
+// Called when a table frees up or admission gates open
 bool tryAssignFromQueue(
     RestaurantState* state,
     GroupQueue& queue,
@@ -124,10 +133,7 @@ bool tryAssignFromQueue(
     if (allocatedTable == -1)
         return false;
 
-    // If we successfully assigned, we consumed the queue item.
-    // The Client had P(QueueFree), so now we have a free slot in the queue because this guy left it (entered table).
-    // So we V(QueueFree) to allow a new guy in.
-    V(semFree);
+    V(semFree); // Release a spot in the queue backlog limiter
 
     char logBuffer[256];
     snprintf(logBuffer, sizeof(logBuffer),
@@ -144,13 +150,13 @@ bool tryAssignFromQueue(
     return true;
 }
 
+// Iteratively tries to seat groups from both VIP/Normal queues
 void tryAssignPendingGroups(RestaurantState* state) {
     bool assignedSomething;
 
     do {
         assignedSomething = false;
 
-        // VIP first
         if (tryAssignFromQueue(
             state,
             state->vipQueue,
@@ -160,7 +166,7 @@ void tryAssignPendingGroups(RestaurantState* state) {
             false
         )) {
             assignedSomething = true;
-            continue; // Strict priority: if VIP served, re-check VIPs (starve Normal)
+            continue;
         }
 
         if (tryAssignFromQueue(
@@ -180,8 +186,6 @@ void tryAssignPendingGroups(RestaurantState* state) {
 void handleQueueGroup(const ClientRequest& req) {
     char logBuffer[256];
     
-    // Client has already blocked on SEM_QUEUE_FREE_... so slot is guaranteed.
-    // We just push to the internal array.
     bool queued = queuePush(req.pid, req.vipStatus, req.groupSize, req.groupID);
     
     if (queued) {
@@ -192,21 +196,19 @@ void handleQueueGroup(const ClientRequest& req) {
         return;
     }
     
+    // Queue full? Retry (should be protected by semaphore backpressure in Client, but strictly safe here)
     handleQueueGroup(req);
 }
 
-// Add static counter for admission control
 static int globalAssignmentRequests = 0;
 static bool admissionGateOpen = false;
 
+// Receives a new group assignment request from Client process
+// Decides to Seat immediately, Queue, or Wait (if gated)
 void handleAssignGroup(RestaurantState* state, const ClientRequest& req) {
     char logBuffer[256];
 
-    // --- ADMISSION CONTROL BARRIER ---
-    // If FIXED_GROUP_COUNT is active, we COUNT requests but DO NOT assign 
-    // --- ADMISSION CONTROL BARRIER ---
-    // If FIXED_GROUP_COUNT is active, we check if ALL groups are created (globally).
-    // The Client process increments state->totalGroupsCreated.
+    // Gating Logic: Wait for all N groups to be created before letting ANYONE in (if requested)
     if (FIXED_GROUP_COUNT > 0 && !admissionGateOpen) {
         
         P(SEM_MUTEX_STATE);
@@ -214,26 +216,20 @@ void handleAssignGroup(RestaurantState* state, const ClientRequest& req) {
         V(SEM_MUTEX_STATE);
 
         if (created < FIXED_GROUP_COUNT) {
-            // Force Queue - do not attempt assignment yet
             handleQueueGroup(req);
             return;
         } else {
-            // Threshold reached! Open gates.
             admissionGateOpen = true;
             snprintf(logBuffer, sizeof(logBuffer),
                 "\033[32m[%ld] [SERVICE]: ALL %d GROUPS CREATED - OPENING ADMISSION GATES\033[0m",
                 time(NULL), FIXED_GROUP_COUNT);
             fifoLog(logBuffer);
             
-            // CRITICAL FIX: Immediately trigger processing of the waiting queue!
-            // Otherwise, if the current request is forced to queue (Fairness), we deadlock.
             tryAssignPendingGroups(state);
         }
     }
-    // ---------------------------------
 
-    // --- FAIRNESS CHECK (Queue Priority) ---
-    // If there are people waiting in the corresponding queue, this new group MUST wait too.
+    // Fairness check: If queue is non-empty, new groups MUST queue first
     bool mustQueue = false;
     P(SEM_MUTEX_QUEUE);
     if (req.vipStatus) {
@@ -255,33 +251,25 @@ void handleAssignGroup(RestaurantState* state, const ClientRequest& req) {
     int freeSeats = TOTAL_SEATS - state->currentGuestCount;
 
 #if STRESS_TEST
-    // ADMISSION CONTROL for Stress Test:
-    // Clients must wait ("queue") until belt is full (500 items).
-    // Check if belt is full (crude check: look for empty slots or assume check done outside).
-    // Better: Count items on belt.
+    // Custom Stress Test gate logic
     int beltItems = 0;
     for(int i=0; i<BELT_SIZE; ++i) if(state->belt[i].dishID != 0) beltItems++;
     
-    // Static state to track if we started allowing people (once opened, stay opened)
     static bool stressTestOpened = false;
     
-    // Open floodgates if belt is full
     if (beltItems >= 500) stressTestOpened = true;
     
     if (!stressTestOpened) {
-        V(SEM_MUTEX_STATE); // Release lock before queuing
+        V(SEM_MUTEX_STATE);
         handleQueueGroup(req);
         return;
     }
 #endif
 
-    // ADMISSION CONTROL for Zombie Test:
 #if PREDEFINED_ZOMBIE_TEST
-    // Only 1 group allowed in the restaurant for Zombie Test UNTIL Group 0 finishes
-    // Global static zombieTestOccupancy is used
     if (!zombieGroupFinished && zombieTestOccupancy >= 1) {
         V(SEM_MUTEX_STATE);
-        handleQueueGroup(req); // Queue everyone else
+        handleQueueGroup(req);
         return;
     }
     zombieTestOccupancy++; 
@@ -307,9 +295,6 @@ void handleAssignGroup(RestaurantState* state, const ClientRequest& req) {
         assigned.type = REQ_GROUP_ASSIGNED;
         assigned.extraData = assignedTable;
 
-        // CRITICAL: We successfully assigned a table instantly (skipping queue).
-        // The Client has P(SEM_QUEUE_FREE) so they consumed a "waiting slot".
-        // Since they are not waiting, we must return this slot to the system.
         if (req.vipStatus)
             V(SEM_QUEUE_FREE_VIP);
         else
@@ -317,7 +302,6 @@ void handleAssignGroup(RestaurantState* state, const ClientRequest& req) {
 
         queueSendRequest(assigned);
         
-        // If we just opened the gates, try to assign others too!
         if (admissionGateOpen) {
              tryAssignPendingGroups(state);
         }
@@ -333,12 +317,12 @@ void handleAssignGroup(RestaurantState* state, const ClientRequest& req) {
     handleQueueGroup(req);
 }
 
+// Processes a group that has finished eating
 void handleGroupFinished(RestaurantState* state, const ClientRequest& req, int& finishedCount) {
     pid_t pid = req.pid;
     const int* eatenCount = req.eatenCount;
 
 #if PREDEFINED_ZOMBIE_TEST
-    // Decrement zombie occupancy counter so next group can enter (if any)
     P(SEM_MUTEX_STATE);
     zombieTestOccupancy--;
     if (req.groupID == 0) {
@@ -350,6 +334,7 @@ void handleGroupFinished(RestaurantState* state, const ClientRequest& req, int& 
     P(SEM_MUTEX_STATE);
     P(SEM_MUTEX_BELT);
 
+    // Free up table slot
     for (int i = 0; i < TABLE_COUNT; ++i) {
         Table& t = state->tables[i];
 
@@ -361,14 +346,10 @@ void handleGroupFinished(RestaurantState* state, const ClientRequest& req, int& 
             bool vip = t.slots[s].vipStatus;
 
 #if ZOMBIE_TEST == 1
-            // Case 1: DO NOT clean zombie dishes
-            // Logic skipped to simulate zombie dish accumulation
 #else
-            // Case 2 (or Normal): Clean zombie dishes
             cleanZombieDishes(state, groupID);
 #endif
 
-            // Count total dishes eaten for logging (already tracked in shared memory)
             int groupDishes = 0;
             int groupRevenue = 0;
             for (int j = 0; j < COLOR_COUNT; ++j) {
@@ -397,21 +378,19 @@ void handleGroupFinished(RestaurantState* state, const ClientRequest& req, int& 
             V(SEM_MUTEX_BELT);
             V(SEM_MUTEX_STATE);
 
-            // Increment local finished count
             finishedCount++;
             
-            // Check termination condition
+            // Check for termination condition trigger
             if (FIXED_GROUP_COUNT > 0 && finishedCount >= FIXED_GROUP_COUNT) {
                  snprintf(logBuffer, sizeof(logBuffer), 
                     "\033[32m[%ld] [SERVICE]: SERVED ALL GROUPS (%d) - INITIATING SHUTDOWN\033[0m", 
                     time(NULL), finishedCount);
                  fifoLog(logBuffer);
                  
-                 // Signal parent (Main) to terminate
-                 kill(getppid(), SIGINT);
+                 kill(getppid(), SIGINT); // Trigger shutdown in Main
             }
 
-            tryAssignPendingGroups(state); // CHECK QUEUE after every departure
+            tryAssignPendingGroups(state);
             return;
         }
     }
@@ -420,6 +399,7 @@ void handleGroupFinished(RestaurantState* state, const ClientRequest& req, int& 
     V(SEM_MUTEX_STATE);
 }
 
+// Main Service Process Loop
 void startService() {
     fifoOpenWrite();
 
@@ -428,7 +408,6 @@ void startService() {
 
     RestaurantState* state = getState();
     
-    // Local accounting for served groups
     int finishedGroups = 0;
 
     while (!terminate_flag && !evacuate_flag) {
@@ -441,7 +420,6 @@ void startService() {
             break;
         case REQ_BARRIER_CHECK:
             {
-                // Force check barrier
                 if (FIXED_GROUP_COUNT > 0 && !admissionGateOpen) {
                     P(SEM_MUTEX_STATE);
                     int created = state->totalGroupsCreated;

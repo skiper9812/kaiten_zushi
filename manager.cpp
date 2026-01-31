@@ -2,20 +2,15 @@
 
 volatile sig_atomic_t managerCmd = 0;
 
+// Handles signals sent to the Manager process (SIGUSR1, SIGUSR2, SIGTERM)
 void handleManagerSignal(int sig) {
     if (sig == SIGUSR1) managerCmd = 1;
     else if (sig == SIGUSR2) managerCmd = 2;
     else if (sig == SIGTERM) managerCmd = 3;
 }
 
-void sendCloseSignal() {
-    int fd = open(CLOSE_FIFO, O_WRONLY | O_NONBLOCK);
-    if (fd == -1) return;
-    const char* msg = "CLOSE_RESTAURANT";
-    write(fd, msg, strlen(msg) + 1);
-    close(fd);
-}
-
+// Main Manager process loop
+// Controls simulation speed and handling emergency closure
 void startManager() {
     struct sigaction sa = { 0 };
     sa.sa_handler = handleManagerSignal;
@@ -28,6 +23,7 @@ void startManager() {
     RestaurantState* state = getState();
     fifoOpenWrite();
 
+    // Initialize Global State
     P(SEM_MUTEX_STATE);
 
     state->restaurantMode = OPEN;
@@ -63,7 +59,7 @@ void startManager() {
     fifoLog(buffer);
 
     while (!terminate_flag && !evacuate_flag) {
-        pause();  // Block until signal received
+        pause(); // Wait for control signal
 
         if (managerCmd != 0) {
             P(SEM_MUTEX_STATE);
@@ -83,7 +79,7 @@ void startManager() {
             case 3:
                 state->restaurantMode = CLOSED;
                 evacuate_flag = 1;
-                kill(0, SIGTERM);  // Propagate to all processes in group
+                kill(0, SIGTERM); 
                 break;
             }
 
@@ -91,7 +87,6 @@ void startManager() {
             managerCmd = 0;
             V(SEM_MUTEX_STATE);
 
-            // Only log if speed actually changed
             if (oldSpeed != newSpeed) {
                 snprintf(buffer, sizeof(buffer), "\033[35m[%ld] [MANAGER]: SPEED CHANGED %d -> %d | pid=%d\033[0m",
                     time(NULL), oldSpeed, newSpeed, getpid());

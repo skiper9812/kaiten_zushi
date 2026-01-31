@@ -11,8 +11,6 @@
 #include <stdlib.h>
 #include <stddef.h>
 
-/* ---------- GLOBAL DEFINITIONS ---------- */
-
 key_t SHM_KEY = -1;
 key_t SEM_KEY = -1;
 key_t MSG_KEY = -1;
@@ -30,8 +28,11 @@ RestaurantState* state = nullptr;
 int fifoFdWrite = -1;
 int fifoFdRead = -1;
 
-/* ---------- MESSAGE QUEUES ---------- */
+// ============================================================================
+// QUEUE HELPERS
+// ============================================================================
 
+// Creates a message queue with a specific Project ID
 int createQueue(char projId) {
     key_t key = ftok(".", projId);
     CHECK_ERR(key, ERR_IPC_INIT, "ftok failed");
@@ -42,6 +43,7 @@ int createQueue(char projId) {
     return qid;
 }
 
+// Connects to an existing message queue
 int connectQueue(char projId) {
     key_t key = ftok(".", projId);
     CHECK_ERR(key, ERR_IPC_INIT, "ftok failed");
@@ -52,6 +54,7 @@ int connectQueue(char projId) {
     return qid;
 }
 
+// Removes a message queue
 void removeQueue(char projId) {
     CHECK_ERR(msgctl(projId, IPC_RMID, nullptr), ERR_IPC_MSG, "msgctl remove failed");
 }
@@ -61,24 +64,26 @@ struct QueueRecvTraits {
     static constexpr int flags = 0;
 };
 
+// Premium (Chef) queue should be non-blocking by default (polling behavior)
 template<>
 struct QueueRecvTraits<PremiumRequest> {
     static constexpr int flags = IPC_NOWAIT;
 };
 
+// Generic safe queue send with semaphore rate limiting
+// Handles interrupts (EINTR) and termination signaling
 template<typename T>
 void queueSend(int qid, int semFree, int semItems,
     const T& msg, ErrorCode err, const char* errMsg)
 {
+    // Wait for free space in queue
     P(semFree);
     
-    // Check flags after P() returns (might have returned due to flags)
     if (terminate_flag || evacuate_flag) {
-        V(semFree);  // Release what we took
+        V(semFree); 
         return;
     }
 
-    // Use IPC_NOWAIT and retry loop to allow checking termination flags
     for (;;) {
         if (terminate_flag || evacuate_flag) {
             V(semFree);
@@ -87,19 +92,18 @@ void queueSend(int qid, int semFree, int semItems,
         
         int ret = msgsnd(qid, &msg, sizeof(T) - sizeof(long), 0);
         if (ret == 0) {
-            return;  // Success
+            return; 
         }
         
         int savedErrno = errno;
         if (savedErrno == EAGAIN) {
-            SIM_SLEEP(10000);  // Queue full, wait 10ms and retry
+            SIM_SLEEP(10000);
             continue;
         }
         if (savedErrno == EINTR) {
-            continue;  // Interrupted, check flags and retry
+            continue; 
         }
         
-        // Real error
         if (terminate_flag || evacuate_flag) {
             V(semFree);
             return;
@@ -109,6 +113,8 @@ void queueSend(int qid, int semFree, int semItems,
     }
 }
 
+// Generic safe queue receive
+// Handles timeouts, interrupts, and termination signaling
 template<typename T>
 bool queueRecv(int qid, int semItems, int semFree,
     T& msg, long mtype,
@@ -123,7 +129,7 @@ bool queueRecv(int qid, int semItems, int semFree,
         ssize_t ret = msgrcv(qid, &msg, sizeof(T) - sizeof(long), mtype, baseFlags);
 
         if (ret >= 0) {
-            V(semFree);
+            V(semFree); // Signal free space
             return true;
         }
 
@@ -134,7 +140,6 @@ bool queueRecv(int qid, int semItems, int semFree,
         }
         
         if (savedErrno == ENOMSG || savedErrno == EAGAIN) {
-             // Only possible if IPC_NOWAIT was used
             if (baseFlags & IPC_NOWAIT) {
                 return false;
             }
@@ -149,6 +154,8 @@ bool queueRecv(int qid, int semItems, int semFree,
         return false;
     }
 }
+
+// --- Type-safe Wrappers ---
 
 void queueSendRequest(const ServiceRequest& msg) {
     queueSend(serviceQid,
@@ -226,7 +233,9 @@ void queueRecvResponse(ClientResponse& msg, long mtype) {
         "msgrcv ClientResponse failed");
 }
 
-/* ---------- FIFO LOGGER ---------- */
+// ============================================================================
+// FIFO LOGGING
+// ============================================================================
 
 void fifoInit() {
     if (access(FIFO_PATH, F_OK) == -1) {
@@ -255,10 +264,8 @@ void fifoCloseWrite() {
 }
 
 void fifoLog(const char* msg) {
-    if (fifoFdWrite == -1) return;  // Silently skip if not open
+    if (fifoFdWrite == -1) return; 
     
-    // Protect log writing to avoid interleaving lines from multiple processes
-    // P() is safe here as error handler uses printf/stderr, not fifoLog.
     P(SEM_MUTEX_LOGS);
     
     char buffer[512];
@@ -268,8 +275,8 @@ void fifoLog(const char* msg) {
     while (written < len) {
         ssize_t ret = write(fifoFdWrite, buffer + written, len - written);
         if (ret == -1) {
-            if (errno == EINTR) continue;  // Retry on interrupt
-            break; // Break on error
+            if (errno == EINTR) continue; 
+            break;
         }
         written += ret;
     }
@@ -277,6 +284,7 @@ void fifoLog(const char* msg) {
     V(SEM_MUTEX_LOGS);
 }
 
+// Dedicated logging process loop
 void loggerLoop(const char* filename) {
     fifoFdRead = open(FIFO_PATH, O_RDONLY);
     CHECK_ERR(fifoFdRead, ERR_IPC_INIT, "fifo open read");
@@ -300,7 +308,9 @@ void loggerLoop(const char* filename) {
     _exit(0);
 }
 
-/* ---------- SEMAPHORES ---------- */
+// ============================================================================
+// SEMAPHORES
+// ============================================================================
 
 static void semSet(int semnum, int val) {
     union semun {
@@ -312,11 +322,11 @@ static void semSet(int semnum, int val) {
     CHECK_ERR(semctl(semId, semnum, SETVAL, arg), ERR_SEM_OP, "semctl SETVAL");
 }
 
-// Ensure we use semtimedop
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
 
+// Wait (Decrement) operation with timeout to allow flag checking
 void P(int semnum) {
     struct sembuf op = { (unsigned short)semnum, -1, 0 };
     struct timespec ts;
@@ -325,9 +335,8 @@ void P(int semnum) {
         if (terminate_flag || evacuate_flag)
             return;
 
-        // Set timeout to 500ms to allow checking termination flags frequently
         ts.tv_sec = 0;
-        ts.tv_nsec = 500000000;
+        ts.tv_nsec = 500000000; // 500ms
 
         int ret = semtimedop(semId, &op, 1, &ts);
         
@@ -337,8 +346,7 @@ void P(int semnum) {
         int savedErrno = errno;
         
         if (savedErrno == EAGAIN) {
-             // Timeout expired, check flags and retry
-             continue;
+             continue; // Timeout
         }
 
         if (savedErrno == EINTR || savedErrno == EIDRM) {
@@ -356,6 +364,7 @@ void P(int semnum) {
     }
 }
 
+// Signal (Increment) operation
 void V(int semnum) {
     struct sembuf op = { (unsigned short)semnum, 1, 0 };
 
@@ -376,16 +385,12 @@ void V(int semnum) {
 
 int getSemValue(int semnum) {
     int val = semctl(semId, semnum, GETVAL);
-    // Don't error out on failure, just return -1 which will block the loop safely
     if (val == -1) return -1;
     return val;
 }
 
-/* ---------- BLOCKING QUEUE (VIP / NORMAL) ---------- */
-
+// Used to push group into local process memory queues (VIP/Normal)
 bool queuePush(pid_t groupPid, bool vipStatus, int groupSize, int groupID) {
-    // Note: The caller (Client) has already performed P(SEM_QUEUE_FREE) to reserve space.
-    // We just add to the data structure.
 
     if (terminate_flag || evacuate_flag)
         return false;
@@ -394,7 +399,6 @@ bool queuePush(pid_t groupPid, bool vipStatus, int groupSize, int groupID) {
 
     if (vipStatus) {
         if (state->vipQueue.count >= MAX_QUEUE) {
-           // Should not happen if semaphores work
            V(SEM_MUTEX_QUEUE);
            return false; 
         }
@@ -415,18 +419,12 @@ bool queuePush(pid_t groupPid, bool vipStatus, int groupSize, int groupID) {
 
     V(SEM_MUTEX_QUEUE);
     
-    // We do NOT V(SEM_QUEUE_USED) here because we aren't using that mechanism anymore?
-    // Wait, tryAssignFromQueue loops over `queue.count`. It acts as the "Used" count.
-    // The previous code had `V(SEM_QUEUE_USED_VIP)`.
-    // My new `tryAssignFromQueue` (Service.cpp) iterates `queue.count`. 
-    // It does NOT P(SEM_QUEUE_USED).
-    // So we don't need `SEM_QUEUE_USED` anymore for logic, only `SEM_QUEUE_FREE` for throttling.
-    // Correct. The `count` variable is protected by MUTEX_QUEUE.
-
     return true;
 }
 
-/* ---------- SHM / SEM / MSG INIT ---------- */
+// ============================================================================
+// INITIALIZATION
+// ============================================================================
 
 int ipcInit() {
     SHM_KEY = ftok(".", 'A'); CHECK_ERR(SHM_KEY, ERR_IPC_INIT, "ftok SHM");
@@ -441,26 +439,22 @@ int ipcInit() {
     semId = semget(SEM_KEY, SEM_COUNT, IPC_CREAT | 0600);
     CHECK_ERR(semId, ERR_IPC_INIT, "semget");
 
-    // Critical sections
+    // Initialize Semaphores
     semSet(SEM_MUTEX_STATE, 1);
     semSet(SEM_MUTEX_QUEUE, 1);
     semSet(SEM_MUTEX_LOGS, 1);
     semSet(SEM_MUTEX_BELT, 1);
 
-    // Belt
     semSet(SEM_BELT_SLOTS, BELT_SIZE);
     semSet(SEM_BELT_ITEMS, 0);
 
-    // Tables
     semSet(SEM_TABLES, TABLE_COUNT);
 
-    // Restaurant queue (blocking)
     semSet(SEM_QUEUE_FREE_VIP, MAX_QUEUE);
     semSet(SEM_QUEUE_FREE_NORMAL, MAX_QUEUE);
     semSet(SEM_QUEUE_USED_VIP, 0);
     semSet(SEM_QUEUE_USED_NORMAL, 0);
 
-    // Message queue control
     semSet(SEM_CLIENT_FREE, CLIENT_QUEUE_SIZE);
     semSet(SEM_CLIENT_ITEMS, 0);
 
@@ -488,8 +482,6 @@ RestaurantState* getState() {
     return state;
 }
 
-/* ---------- CLEANUP ---------- */
-
 void ipcCleanup() {
     if (state && state != (void*)-1) { shmdt(state); state = NULL; }
     if (shmId != -1) { shmctl(shmId, IPC_RMID, NULL); shmId = -1; }
@@ -503,43 +495,38 @@ void ipcCleanup() {
     unlink(CLOSE_FIFO);
 }
 
-/* ---------- PAUSE MONITOR ---------- */
+// ============================================================================
+// PAUSE MONITOR
+// ============================================================================
 
 static void monitorSigcontHandler(int sig) {
-    // SIGCONT just resumes execution, but might not interrupt pause() reliably w/o SA_RESTART quirks.
-    // Raise SIGUSR1 to definitely interrupt pause() in this thread.
-    //raise(SIGUSR1);
 }
 
 static void* pauseMonitorThread(void* arg) {
-    // Unblock SIGCONT and SIGUSR1 only in this thread
     sigset_t set;
     sigemptyset(&set);
     sigaddset(&set, SIGCONT);
     pthread_sigmask(SIG_UNBLOCK, &set, NULL);
 
-    // Register handlers
     struct sigaction sa = { 0 };
 
     sa.sa_handler = monitorSigcontHandler;
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = 0;
-    sigaction(SIGCONT, &sa, NULL); // SIGCONT handler raises SIGUSR1
+    sigaction(SIGCONT, &sa, NULL); 
 
     struct timespec t1, t2;
 
     while (true) {
         clock_gettime(CLOCK_MONOTONIC, &t1);
         
-        // Wait for signal. 
-        // SIGSTOP freezes here. SIGCONT wakes up, runs handler -> raises SIGUSR1 -> interrupts pause()
-        pause(); 
+        pause(); // Wait for SIGCONT/signal
         
         clock_gettime(CLOCK_MONOTONIC, &t2);
         
         long long ns = (t2.tv_sec - t1.tv_sec) * 1000000000LL + (t2.tv_nsec - t1.tv_nsec);
         
-        // Filter small noise (>1ms considered real pause)
+        // Filter out small wakeups, accumulate real pauses
         if (ns > 1000000)
             if (state) state->totalPauseNanoseconds += ns;
     }
@@ -548,7 +535,6 @@ static void* pauseMonitorThread(void* arg) {
 
 void startPauseMonitor() {
     // Block SIGCONT in main thread so it's inherited blocked by future threads
-    // (though main thread itself shouldn't handle SIGCONT)
     sigset_t sigcontSet;
     sigemptyset(&sigcontSet);
     sigaddset(&sigcontSet, SIGCONT);

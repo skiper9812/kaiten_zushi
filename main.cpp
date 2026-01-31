@@ -9,11 +9,13 @@
 volatile sig_atomic_t terminate_flag = 0;
 volatile sig_atomic_t evacuate_flag = 0;
 
+// Handles graceful shutdown signal (SIGINT)
 void sigintHandler(int sig) {
     terminate_flag = 1;
     kill(0, SIGTERM);  // Propagate to all children
 }
 
+// Handles emergency evacuation signal
 void evacuationHandler(int sig) {
     evacuate_flag = 1;
 }
@@ -31,10 +33,8 @@ int main() {
     sa.sa_flags &= ~SA_RESTART;
     sigaction(SIGTERM, &sa, NULL);
     
-    // Ignore SIGPIPE globally - prevent crash if logging fails
+    // Ignore harmless signals globally
     signal(SIGPIPE, SIG_IGN);
-    // Ignore control signals globally (children inherit SIG_IGN).
-    // Only Manager (and Monitor) will override this.
     signal(SIGUSR1, SIG_IGN);
     signal(SIGUSR2, SIG_IGN);
     
@@ -45,14 +45,15 @@ int main() {
     RestaurantState* state = getState();
     CHECK_NULL(state, ERR_IPC_INIT, "Failed to get RestaurantState pointer");
     
-    // Start PauseMonitor thread in main process AFTER all forks
-    // This ensures child processes don't inherit SIGCONT blocking/handling logic
+    // Monitors process pauses for accurate timekeeping
     startPauseMonitor();
+
+    // --- Spawn Subprocesses ---
 
     pid_t loggerPid = fork();
     if (loggerPid == 0) {
-        signal(SIGINT, SIG_IGN);  // Children ignore SIGINT, main propagates as SIGTERM
-        signal(SIGTERM, SIG_IGN); // Logger ignores SIGTERM - exits only when pipe is closed (EOF)
+        signal(SIGINT, SIG_IGN); 
+        signal(SIGTERM, SIG_IGN);
         loggerLoop("logs/simulation.log");
         _exit(0);
     }
@@ -60,7 +61,6 @@ int main() {
     pid_t managerPid = fork();
     if (managerPid == 0) {
         signal(SIGINT, SIG_IGN);
-        // Manager NEEDS SIGUSR1/SIGUSR2 for control, so it will set its own handlers
         startManager();
         _exit(0);
     }
@@ -95,6 +95,7 @@ int main() {
         _exit(0);
     }
 
+    // Wait for all children to exit
     for (;;) {
         pid_t pid = wait(NULL);
         if (pid == -1) {
@@ -103,7 +104,7 @@ int main() {
         }
     }
 
-    // Print final reports before cleanup
+    // Print Final Statistics
     printAllReports(state);
 
     ipcCleanup();
