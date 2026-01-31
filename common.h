@@ -16,10 +16,13 @@
 #include <string.h>
 #include <time.h>
 #include <pthread.h>
+#include "error_handler.h"
 
 // =====================================================
-// SIMULATION CONTROL
+// CONFIGURATION MACROS
 // =====================================================
+#define FIFO_PATH "/tmp/restauracja_fifo"
+#define CLOSE_FIFO "/tmp/close_restaurant_fifo"
 
 // Set to 1 to skip all sleeps during testing
 #define SKIP_DELAYS 1
@@ -33,24 +36,55 @@
 // Simulation duration in seconds (maps to TP->TK restaurant hours)
 #define SIMULATION_DURATION_SECONDS 10
 
-// Opening and closing hours (for display/logging purposes)
-#define TP 12
-#define TK 20
+// Set to 1 to enable specific stress test: 5k clients wait, Chef fills belt, then clients enter
+#define STRESS_TEST 0
 
-#define FIFO_PATH "/tmp/restauracja_fifo"
-#define CLOSE_FIFO "/tmp/close_restaurant_fifo"
+// Set to 1 (No Clean) or 2 (With Clean) to enable ZOMBIE_TEST
+// 1 client, 300 premium orders, eats 1, leaves.
+#define ZOMBIE_TEST 0
+#define PREDEFINED_ZOMBIE_TEST (ZOMBIE_TEST > 0)
+#if PREDEFINED_ZOMBIE_TEST
+    // Override duration for Zombie Test
+#undef SIMULATION_DURATION_SECONDS
+#define SIMULATION_DURATION_SECONDS 60
+#endif
+
+// Set to 1 to enable specific stress test: 5k clients wait, Chef fills belt, then clients enter
+#define CRITICAL_TEST 0
+
+// Set to specific number (>= 0) to generate exact number of groups. 
+// Set to -1 for random/infinite generation (until time ends).
+// Set to 1 to enable Table Sharing Test (X3/X4 only, Group Size 1-2)
+#define TABLE_SHARING_TEST 0
+
+// Set to specific number (>= 0) to generate exact number of groups. 
+// Set to -1 for random/infinite generation (until time ends).
+#define FIXED_GROUP_COUNT 1000
+
+#define MAX_QUEUE 1000
+#define BELT_SIZE 100
 
 // Table counts by size
+#if TABLE_SHARING_TEST == 1
+#define X1 0
+#define X2 0
+#define X3 10
+#define X4 10
+#elif TABLE_SHARING_TEST == 2
+#define X1 0
+#define X2 0
+#define X3 1
+#define X4 0
+#else
 #define X1 10
 #define X2 10
 #define X3 10
 #define X4 10
+#endif
 
 // Derived constants
 #define TOTAL_SEATS (X1 + 2 * X2 + 3 * X3 + 4 * X4)
 #define TABLE_COUNT (X1 + X2 + X3 + X4)
-#define BELT_SIZE 500
-#define MAX_QUEUE 2000
 #define COLOR_COUNT 6
 #define MAX_TABLE_SLOTS 4
 
@@ -64,7 +98,7 @@ static int priceForColor(colors c) {
 static const char* colorToString(colors c) {
     static const char* names[COLOR_COUNT] = { "WHITE","YELLOW","GREEN","RED","BLUE","PURPLE" };
     return names[c];
-}
+    }
 
 static colors colorFromIndex(int idx) {
     static const colors map[COLOR_COUNT] = { WHITE, YELLOW, GREEN, RED, BLUE, PURPLE };
@@ -87,6 +121,8 @@ typedef enum { OPEN = 1, SLOW_MODE = 2, FAST_MODE = 3, CLOSED = 4 } restaurantMo
 
 struct GroupQueue {
     int groupPid[MAX_QUEUE];
+    int groupSize[MAX_QUEUE];
+    int groupID[MAX_QUEUE];
     int count;
 };
 
@@ -124,8 +160,12 @@ struct RestaurantState {
 
     int currentGuestCount;
     int currentVIPCount;
+    int totalGroupsCreated; // Tracks total groups successfully forked, for Barrier logic
 
     int nextDishID;
+#if CRITICAL_TEST
+    int suicideTriggered; // Flag to ensure only one process triggers the random kill test
+#endif
 
     time_t startTime;
     long long totalPauseNanoseconds;

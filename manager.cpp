@@ -59,7 +59,7 @@ void startManager() {
     V(SEM_MUTEX_STATE);
 
     char buffer[128];
-    snprintf(buffer, sizeof(buffer), "\033[35m[%ld] [MANAGER %d]: Restaurant opened, speed=%d\033[0m", time(NULL), getpid(), state->simulationSpeed);
+    snprintf(buffer, sizeof(buffer), "\033[35m[%ld] [MANAGER]: RESTAURANT OPENED, SPEED=%d | pid=%d\033[0m", time(NULL), state->simulationSpeed, getpid());
     fifoLog(buffer);
 
     while (!terminate_flag && !evacuate_flag) {
@@ -93,8 +93,8 @@ void startManager() {
 
             // Only log if speed actually changed
             if (oldSpeed != newSpeed) {
-                snprintf(buffer, sizeof(buffer), "\033[35m[%ld] [MANAGER %d]: Speed changed %d -> %d\033[0m",
-                    time(NULL), getpid(), oldSpeed, newSpeed);
+                snprintf(buffer, sizeof(buffer), "\033[35m[%ld] [MANAGER]: SPEED CHANGED %d -> %d | pid=%d\033[0m",
+                    time(NULL), oldSpeed, newSpeed, getpid());
                 fifoLog(buffer);
             }
         }

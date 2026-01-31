@@ -1,9 +1,9 @@
 ﻿#pragma once
 #include "common.h"
 
-#define CLIENT_QUEUE_SIZE 200
-#define SERVICE_QUEUE_SIZE 150
-#define PREMIUM_QUEUE_SIZE 100
+#define CLIENT_QUEUE_SIZE 256
+#define SERVICE_QUEUE_SIZE 1024
+#define PREMIUM_QUEUE_SIZE 1024
 
 #define CLIENT_REQ_QUEUE 'X'
 #define SERVICE_REQ_QUEUE 'Y'
@@ -23,7 +23,8 @@ extern int premiumQid;
 enum ClientRequestType {
     REQ_ASSIGN_GROUP = 1,
     REQ_CONSUME_DISH,
-    REQ_GROUP_FINISHED
+    REQ_GROUP_FINISHED,
+    REQ_BARRIER_CHECK
 };
 
 enum ServiceRequestType {
@@ -104,13 +105,14 @@ void ipcCleanup();
 
 void P(int semnum);
 void V(int semnum);
+int getSemValue(int semnum);
 
 // -----------------------------------------------------
 // Message queues (System V)
 // -----------------------------------------------------
 
 int queuePop(int requiredSize, bool vipSuitable);
-bool queuePush(int groupID, bool vipStatus);
+bool queuePush(pid_t groupPid, bool vipStatus, int groupSize, int groupID);
 
 int createQueue(char projId);
 int connectQueue(char projId);

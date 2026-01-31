@@ -85,7 +85,7 @@ void queueSend(int qid, int semFree, int semItems,
             return;
         }
         
-        int ret = msgsnd(qid, &msg, sizeof(T) - sizeof(long), IPC_NOWAIT);
+        int ret = msgsnd(qid, &msg, sizeof(T) - sizeof(long), 0);
         if (ret == 0) {
             return;  // Success
         }
@@ -120,7 +120,6 @@ bool queueRecv(int qid, int semItems, int semFree,
         if (terminate_flag || evacuate_flag)
             return false;
         
-        // Always use IPC_NOWAIT to avoid indefinite blocking
         ssize_t ret = msgrcv(qid, &msg, sizeof(T) - sizeof(long), mtype, baseFlags);
 
         if (ret >= 0) {
@@ -131,17 +130,15 @@ bool queueRecv(int qid, int semItems, int semFree,
         int savedErrno = errno;
         
         if (savedErrno == EINTR) {
-            continue;  // Retry after signal
+            continue;
         }
         
         if (savedErrno == ENOMSG || savedErrno == EAGAIN) {
-            // No message available - if this was originally non-blocking, return false
-            if constexpr (baseFlags & IPC_NOWAIT) {
+             // Only possible if IPC_NOWAIT was used
+            if (baseFlags & IPC_NOWAIT) {
                 return false;
             }
-            // Otherwise poll with sleep
-            SIM_SLEEP(10000);  // 10ms
-            continue;
+            continue; 
         }
 
         ErrorDecision d = handleError(err, errMsg, savedErrno);
@@ -259,6 +256,11 @@ void fifoCloseWrite() {
 
 void fifoLog(const char* msg) {
     if (fifoFdWrite == -1) return;  // Silently skip if not open
+    
+    // Protect log writing to avoid interleaving lines from multiple processes
+    // P() is safe here as error handler uses printf/stderr, not fifoLog.
+    P(SEM_MUTEX_LOGS);
+    
     char buffer[512];
     int len = snprintf(buffer, sizeof(buffer), "%s\n", msg);
     
@@ -267,10 +269,12 @@ void fifoLog(const char* msg) {
         ssize_t ret = write(fifoFdWrite, buffer + written, len - written);
         if (ret == -1) {
             if (errno == EINTR) continue;  // Retry on interrupt
-            return;  // Silently fail on other errors
+            break; // Break on error
         }
         written += ret;
     }
+
+    V(SEM_MUTEX_LOGS);
 }
 
 void loggerLoop(const char* filename) {
@@ -308,22 +312,33 @@ static void semSet(int semnum, int val) {
     CHECK_ERR(semctl(semId, semnum, SETVAL, arg), ERR_SEM_OP, "semctl SETVAL");
 }
 
+// Ensure we use semtimedop
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 void P(int semnum) {
-    struct sembuf op = { (unsigned short)semnum, -1, IPC_NOWAIT };
+    struct sembuf op = { (unsigned short)semnum, -1, 0 };
+    struct timespec ts;
 
     for (;;) {
         if (terminate_flag || evacuate_flag)
             return;
 
-        int ret = semop(semId, &op, 1);
+        // Set timeout to 500ms to allow checking termination flags frequently
+        ts.tv_sec = 0;
+        ts.tv_nsec = 500000000;
+
+        int ret = semtimedop(semId, &op, 1, &ts);
+        
         if (ret != -1)
             return;
 
         int savedErrno = errno;
         
         if (savedErrno == EAGAIN) {
-            SIM_SLEEP(100000);  // 100ms polling
-            continue;
+             // Timeout expired, check flags and retry
+             continue;
         }
 
         if (savedErrno == EINTR || savedErrno == EIDRM) {
@@ -332,7 +347,7 @@ void P(int semnum) {
             continue;
         }
 
-        ErrorDecision d = handleError(ERR_SEM_OP, "semop P", savedErrno);
+        ErrorDecision d = handleError(ERR_SEM_OP, "semtimedop P", savedErrno);
 
         if (d == ERR_DECISION_IGNORE)
             return;
@@ -359,14 +374,18 @@ void V(int semnum) {
     }
 }
 
+int getSemValue(int semnum) {
+    int val = semctl(semId, semnum, GETVAL);
+    // Don't error out on failure, just return -1 which will block the loop safely
+    if (val == -1) return -1;
+    return val;
+}
+
 /* ---------- BLOCKING QUEUE (VIP / NORMAL) ---------- */
 
-bool queuePush(pid_t groupPid, bool vipStatus) {
-    // Block until space available (blocking queue - no rejection)
-    if (vipStatus)
-        P(SEM_QUEUE_FREE_VIP);
-    else
-        P(SEM_QUEUE_FREE_NORMAL);
+bool queuePush(pid_t groupPid, bool vipStatus, int groupSize, int groupID) {
+    // Note: The caller (Client) has already performed P(SEM_QUEUE_FREE) to reserve space.
+    // We just add to the data structure.
 
     if (terminate_flag || evacuate_flag)
         return false;
@@ -374,17 +393,35 @@ bool queuePush(pid_t groupPid, bool vipStatus) {
     P(SEM_MUTEX_QUEUE);
 
     if (vipStatus) {
-        state->vipQueue.groupPid[state->vipQueue.count++] = groupPid;
+        if (state->vipQueue.count >= MAX_QUEUE) {
+           // Should not happen if semaphores work
+           V(SEM_MUTEX_QUEUE);
+           return false; 
+        }
+        state->vipQueue.groupPid[state->vipQueue.count] = groupPid;
+        state->vipQueue.groupSize[state->vipQueue.count] = groupSize;
+        state->vipQueue.groupID[state->vipQueue.count] = groupID;
+        state->vipQueue.count++;
     } else {
-        state->normalQueue.groupPid[state->normalQueue.count++] = groupPid;
+        if (state->normalQueue.count >= MAX_QUEUE) {
+           V(SEM_MUTEX_QUEUE);
+           return false; 
+        }
+        state->normalQueue.groupPid[state->normalQueue.count] = groupPid;
+        state->normalQueue.groupSize[state->normalQueue.count] = groupSize;
+        state->normalQueue.groupID[state->normalQueue.count] = groupID;
+        state->normalQueue.count++;
     }
 
     V(SEM_MUTEX_QUEUE);
-
-    if (vipStatus)
-        V(SEM_QUEUE_USED_VIP);
-    else
-        V(SEM_QUEUE_USED_NORMAL);
+    
+    // We do NOT V(SEM_QUEUE_USED) here because we aren't using that mechanism anymore?
+    // Wait, tryAssignFromQueue loops over `queue.count`. It acts as the "Used" count.
+    // The previous code had `V(SEM_QUEUE_USED_VIP)`.
+    // My new `tryAssignFromQueue` (Service.cpp) iterates `queue.count`. 
+    // It does NOT P(SEM_QUEUE_USED).
+    // So we don't need `SEM_QUEUE_USED` anymore for logic, only `SEM_QUEUE_FREE` for throttling.
+    // Correct. The `count` variable is protected by MUTEX_QUEUE.
 
     return true;
 }
@@ -440,6 +477,7 @@ int ipcInit() {
     fifoInit();
     fifoInitCloseSignal();
     memset(state, 0, sizeof(RestaurantState));
+    state->totalGroupsCreated = 0;
     state->startTime = time(NULL);
     state->totalPauseNanoseconds = 0;
 

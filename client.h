@@ -25,7 +25,15 @@ public:
 
     Group() : tableIndex(-1) {
         groupID = nextGroupID++;
+#if TABLE_SHARING_TEST == 1
+        groupSize = rand() % 2 + 1;
+#elif TABLE_SHARING_TEST == 2
+        if (groupID == 0) groupSize = 2;
+        else if (groupID == 1) groupSize = 1;
+        else groupSize = 1;
+#else
         groupSize = rand() % 4 + 1;
+#endif
         vipStatus = (rand() % 100) < 2;
 
         if (vipStatus) {
@@ -39,6 +47,19 @@ public:
 
         dishesToEat = rand() % 8 + 3;
         ordersLeft = rand() % dishesToEat;
+        
+#if PREDEFINED_ZOMBIE_TEST
+        // Zombie Test: Order massive amount, eat only 1
+        // ONLY valid for first group (Zombie group)
+        if (groupID == 0) {
+            dishesToEat = 1;
+            ordersLeft = 100; // Match BELT_SIZE
+            groupSize = 1;    // Force single person
+            adultCount = 1;
+            childCount = 0;
+        }
+#endif
+        
         memset(eatenCount, 0, sizeof(eatenCount));
         pthread_mutex_init(&mutex, nullptr);
     }
@@ -88,6 +109,14 @@ public:
 
     bool orderPremiumDish() {
         bool orderPremium = (rand() % 100) < 20;
+        
+#if PREDEFINED_ZOMBIE_TEST
+        if (groupID == 0)
+            orderPremium = true; // Always order in Zombie test (for Zombie group)
+        else
+            orderPremium = false; // Strictly forbid others in Zombie test
+#endif
+
         pthread_mutex_lock(&mutex);
         if (orderPremium && ordersLeft > 0) {
             ordersLeft--;
